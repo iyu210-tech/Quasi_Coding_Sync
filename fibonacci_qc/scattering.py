@@ -239,4 +239,70 @@ def transfer_matrix_stack(
         m_total = abeles_matrix(q_width) @ m_total
     return m_total
 
-#cont.
+def transmission_from_transfer(
+    transfer: np.ndarray, q_lead: complex
+) -> float:
+    "Transmission from Abeles transfer matrix & lead wave number"
+    q_lead = _as_complex_scalar(q_lead)
+    m11, m12 = transfer[0,0], transfer[0,1]
+    m21, m22 = transfer[1,0], transfer[1,1]
+    denom = m11 * q_lead + m12 * q_lead**2 + m21 + m22 * q_lead
+    t_amp = 2.0 * q_lead / denom
+    return float(np.abs(t_amp)**2)
+
+def safe_log_t(
+    t: float,
+    *,
+    floor: float = cfg.cfg.TOLERANCES.log_t_floor,
+) -> Tuple[float, TransferStatus]:
+    "Return log(T)"
+    if not np.isfinite(t):
+        return float("nan"), "invalid"
+    if t < 0.0:
+        return float("nan"), "invalid"
+    if t == 0.0:
+        return floor, "underflow"
+    log_t = float(np.log(t))
+    if not np.isfinite(log_t):
+        return floor, "overflow"
+    if log_t < floor:
+        return floor, "underflow"
+    return log_t, "ok"
+
+def _classify_transmission(t: float) -> TransferStatus:
+    tol = cfg.TOLERANCES.t_bounds_atol
+    if not np.isfinite(t):
+        return "invalid"
+    if t < -tol or t > 1.0 + tol:
+        return "non_unitary"
+    return "ok"
+
+def transmission_from_s(
+        s_matrix: SMatrix,
+        q_lead: complex | None = None,
+) -> TransmissionResult:
+    "Extract T=|S21|^2"
+    s_matrix = np.asarray(s_matrix, dtype=np.complex128)
+    s21 = complex(s_matrix[1,0])
+    t=float(np.abs(s21)**2)
+    status = _classify_transmission(t)
+    log_t, log_status = safe_log_t(t)
+    if status == "ok" and log_status != "ok":
+        status = log_status
+    return TransmissionResult(T=t, log_T=log_t, status=status, S21=s21)
+
+def stack_transmission(
+    widths_nm: np.ndarray,
+    potentials_ev: np.ndarray,
+    energy_ev: float,
+    v_lead_ev: float = cfg.V_LEAD_EV,
+) -> TransmissionResult:
+    "Transmission through layer stack at one energy"
+    s_mat = stack_s_matrix(widths_nm, potentials_ev, energy_ev, v_lead_ev)
+    q0 = q_number(energy_ev, v_lead_ev).item()
+    return transmission_from_s(s_mat, q0)
+
+def clean_transmission(
+    generation: int,
+    energy_ev: float,
+    
