@@ -1,4 +1,5 @@
-"""Scattering matrix and clean transmission. 
+"""
+Scattering matrix and clean transmission. 
 
 Layer parameters and stacks from config and geometry respectively
 
