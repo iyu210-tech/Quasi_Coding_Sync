@@ -236,7 +236,7 @@ def transfer_matrix_stack(
     m_total = np.eye(2, dtype=np.complex128)
     for width, pot in zip(widths, pots):
         q=q_number(energy_ev, pot).item()
-        m_total = abeles_matrix(q_width) @ m_total
+        m_total = abeles_matrix(q, width) @ m_total
     return m_total
 
 def transmission_from_transfer(
@@ -305,4 +305,73 @@ def stack_transmission(
 def clean_transmission(
     generation: int,
     energy_ev: float,
-    
+    *,
+    geometry: FibonacciGeometry | None = None,
+    v_lead_ev: float = cfg.V_LEAD_EV,
+) -> TransmissionResult:
+    "T_clean(n, E) for Fib generation n"
+    geom = geometry if geometry is not None else build_geometry(generation)
+    if geom.generation != generation:
+        raise ValueError(f"geometry generation {geom.generation} doesn't match generation {generation}")
+    return stack_transmission(
+        geom.widths_nm, geom.potentials_ev, energy_ev, v_lead_ev)
+
+def clean_transmission_grid(
+    generation: int,
+    energies_ev: np.ndarray,
+    *,
+    geometry: FibonacciGeometry | None = None,
+    v_lead_ev: float = cfg.V_LEAD_EV,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorize T_clean(n, E) over energy grid
+    Returns T, log(T), status arrays aligned with energies_ev
+    """
+    energies = np.asarray(energies_ev, dtype=np.float64)
+    geom = geometry if geometry is not None else build_geometry(generation)
+    if geom.generation != generation:
+        raise ValueError(f"geometry generation {geom.generation} doesn't match generation {generation}")
+    t_out = np.empty_like(energies)
+    log_out = np.empty_like(energies)
+    status_out = np.empty(energies.shape, dtype=object)
+
+    for idx, energy in enumerate(energies.flat):
+        result = stack_transmission(
+            geom.widths_nm, geom.potentials_ev, float(energy), v_lead_ev
+        )
+        t_out.flat[idx] = result.T
+        log_out.flat[idx] = result.log_T
+        status_out.flat[idx] = result.status
+    return t_out, log_out, status_out
+
+def rectangular_barrier_transmission(
+    energy_ev: float,
+    barrier_height_ev: float,
+    width_nm: float,
+    v_lead_ev: float = cfg.V_LEAD_EV,
+) -> float:
+    "Analytical transmission through a single rectangular barrier"
+    e = float(energy_ev)
+    v0 = float(barrier_height_ev)
+    d = float(width_nm)
+    if d < 0.0:
+        raise ValueError("width_nm cannot be negative")
+    if e <= 0.0:
+        raise ValueError("energy_ev must be positive")
+
+    delta = e - v0
+    pref = cfg.KAPPA2_PREFACTOR_PER_EV_NM2
+
+    if abs(delta) < 1e-14:
+        factor = (v0**2) * (d**2) / (4.0 * e * cfg.HBAR2_OVER_2M_EV_NM2)
+        return float(1.0 / (1.0 + factor))
+
+    if delta > 0.0:
+        k = np.sqrt(delta * pref)
+        sin_term = np.sin(k * d)
+        factor = (v0**2) * (sin_term**2) / (4.0 * e * delta)
+        return float(1.0 / (1.0 + factor))
+
+    kappa = np.sqrt(-delta * pref)
+    sinh_term = np.sinh(kappa * d)
+    factor = (v0**2) * (sinh_term**2) / (4.0 * e * (v0 - e))
+    return float(1.0 / (1.0 + factor))
