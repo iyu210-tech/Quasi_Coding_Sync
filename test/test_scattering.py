@@ -72,7 +72,7 @@ def test_single_barrier_matches_analytical_formula():
         assert_in_unit_interval(numerical)
 
 def test_redheffer_matches_direct_two_layer_stack():
-    geom = bulid_geometry(4) #ABA
+    geom = build_geometry(4) #ABA
     energy = 1.7
     s_direct = stack_s_matrix(geom.widths, geom.potentials, energy)
 
@@ -83,4 +83,83 @@ def test_redheffer_matches_direct_two_layer_stack():
     s_manual = redheffer_star(s_manual, interface_s_matrix(q_layers[0], q_layers[1]))
     s_manual = redheffer_star(s_manual, propagation_s_matrix(q_layers[1], geom.widths_nm[1]))
     s_manual = redheffer_star(s_manual, interface_s_matrix(q_layers[1], q_layers[2]))
-    s
+    s_manual = redheffer_star(s_manual, propagation_s_matrix(q_layers[2], geom.widths_nm[2]))
+    s_manual = redheffer_star(s_manual, interface_s_matrix(q_layers[2], q0))
+
+    t_direct = transmission_from_s(s_direct).T
+    t_manual = transmission_from_s(s_manual).T
+    assert t_direct == pytest.approx(t_manual, rel=1e-12, abs=1e-12)
+
+def test_transfer_matrix_agrees_with_s_matrix():
+    geom = build_geometry(6)
+    energies = np.linspace(0.3,9.5,20)
+    for e in energies:
+        s_mat = stack_s_matrix(geom.widths_nm, geom.potentials_ev, float(e))
+        m_mat = transfer_matrix_stack(geom.widths_nm, geom.potentials_ev, float(e))
+        q0 = q_number(float(e), cfg.V_LEAD_EV).item()
+        t_s = transmission_from_s(s_mat).T
+        t_m = transmission_from_transfer(m_mat, q0)
+        assert t_s == pytest.approx(t_m, rel=1e-10, abs=1e-10)
+
+def test_small_fibonacci_words():
+    cases = {
+        2: "A", 
+        3: "AB", 
+        4: "ABA",
+        5: "ABAAB",
+    }
+    energies = np.linspace(0.2,9.0, 15)
+    for n, word in cases.items():
+        geom = build_geometry(n)
+        assert geom.word == word
+        for e in energies:
+            result = clean_transmission(n, float(e), geometry=geom)
+            assert_in_unit_interval(result.T, label=f"T(n={n}, E={e})")
+            assert result.status in ("ok","underflow")
+
+def test_clean_transmission_grid_shape_and_bounds():
+    geom = build_geometry(5)
+    energies = np.linspace(0.2, 5.0, 50)
+    t_arr, log_arr, status = clean_transmission_grid(5, energies, geometry=geom)
+    assert t_arr.shape == energies.shape
+    assert log_arr.shape == energies.shape
+    assert status.shape == energies.shape
+    for t_val in t_arr:
+        assert_in_unit_interval(float(t_val))
+
+def test_slab_at_band_edge_is_stable():
+    energy = cfg.V_A_EV
+    result = stack_transmission(
+        np.array([cfg.D_A_NM]),
+        np.array([cfg.V_A_EV]),
+        energy,
+    )
+    assert np.isfinite(result.T)
+    assert_in_unit_interval(result.T)
+
+def test_safe_log_t_handles_underflow_and_invalid():
+    log_zero, status_zero = safe_log_t(0.0)
+    assert status_zero == "underflow"
+    assert log_zero == cfg.TOLERANCES.log_t_floor
+
+    log_ok, status_ok = safe_log_t(0.5)
+    assert status_ok == "ok"
+    assert log_ok == pytest.approx(np.log(0.5))
+
+    log_bad, status_bad = safe_log_t(-1.0)
+    assert status_bad == "invalid"
+    assert np.isnan(log_bad)
+
+def test_transmission_bounded_on_default_energy_grid():
+    geom = build_geometry(7)
+    energies = np.linspace(cfg.E_MIN_EV, cfg.E_MAX_EV, 100)
+    for e in energies:
+        result = clean_transmission(7, float(e), geometry=geom)
+        assert_in_unit_interval(result.T)
+
+def test_slab_s_matrix_single_layer():
+    energy = 3.0
+    s_mat = slab_s_matrix(energy, cfg.V_B_EV, cfg.D_B_NM)
+    result = transmission_from_s(s_mat)
+    expected = stack_transmission(np.array([cfg.D_B_NM]), np.array([cfg.V_B_EV]), energy)
+    assert result.T == pytest.approx(expected.T, rel=1e-12)
