@@ -36,4 +36,11 @@ def test_substitution_swaps_letter_width_and_potential():
     assert defected.letters[0] == "A"
     assert defected.widths_nm[0] == cfg.D_A_NM
 
-#continue
+def test_phason_swaps_left_and_right_of_bond_p():
+    geom = build_geometry(5)
+    defected = applyphason(geom,0)
+    assert defected.valid
+    assert defected.position == 0
+    np.testing.assert_array_equal(defected.letters[:2], ["B", "A"])
+    assert defected.widths_nm[0] == cfg.D_B_NM
+    assert defected.widths_nm[1] == cfg.D_A_NM
