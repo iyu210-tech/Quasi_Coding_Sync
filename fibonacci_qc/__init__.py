@@ -30,6 +30,26 @@ from fibonacci_qc.scattering import (
     transmission_from_transfer,
 )
 
+from fibonacci_qc.defects import(
+    DefectedStack,
+    allowed_positions,
+    apply_defect,
+    apply_phason,
+    apply_potential_only,
+    apply_substitution,
+    apply_width_only,
+    validate_defect_position,
+)
+
+from fibonacci_qc.reference_solver import (
+    DefectTransmissionResult,
+    delta_t,
+    load_delta_t,
+    reference_sweep,
+    reference_transmission,
+    save_delta_t,
+)
+
 __all__=[
     "CONFIG",
     "FibonacciGeometry",
@@ -53,4 +73,18 @@ __all__=[
     "transfer_to_s_matrix",
     "transmission_from_s",
     "transmission_from_transfer",
+    "DefectedStack",
+    "DefectTransmissionResult",
+    "allowed_positions",
+    "apply_defect"
+    "apply_phason",
+    "apply_potential_only",
+    "apply_substitution",
+    "apply_width_only",
+    "delta_t",
+    "load_delta_t"
+    "reference_sweep"
+    "reference_transmission",
+    "save_delta_t",
+    "validate_defect_position",
 ]
