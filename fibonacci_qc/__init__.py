@@ -50,6 +50,14 @@ from fibonacci_qc.reference_solver import (
     save_delta_t,
 )
 
+from fibonacci_qc.fast_solver import (
+    StackCache, fast_sweep, fast_transmission, validate_against_reference
+)
+
+from fibonacci_qc.raw_data import (
+    load_generation_raw, produce_raw_dataset, run_metadata, save_generation_raw, sweep_generation,
+)
+
 __all__=[
     "CONFIG",
     "FibonacciGeometry",
@@ -87,4 +95,13 @@ __all__=[
     "reference_transmission",
     "save_delta_t",
     "validate_defect_position",
+    "StackCache",
+    "fast_sweep",
+    "fast_transmission",
+    "validate_against_reference",
+    "load_generation_raw",
+    "produce_raw_dataset",
+    "run_metadata",
+    "save_generation_raw",
+    "sweep_generation",
 ]
