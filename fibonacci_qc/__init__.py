@@ -58,6 +58,28 @@ from fibonacci_qc.raw_data import (
     load_generation_raw, produce_raw_dataset, run_metadata, save_generation_raw, sweep_generation,
 )
 
+from fibonacci_qc.analysis_io import (
+    analyze_raw_file, load_parity_analysis, produce_parity_analysis, save_parity_analysis
+)
+
+from fibonacci_qc.parity_analysis import (
+    IntegratedContrast,
+    ParityCheckResult,
+    ParityContrastResult,
+    analyze_generation_parity,
+    analyze_mode_parity,
+    conditional_parity_contrasts,
+    integrate_contrast,
+    integrate_contrast_windows,
+    integrated_summary,
+    origin_shift_check,
+    parity_checks,
+    parity_contrast,
+    reversal_check,
+)
+
+
+
 __all__=[
     "CONFIG",
     "FibonacciGeometry",
@@ -104,4 +126,21 @@ __all__=[
     "run_metadata",
     "save_generation_raw",
     "sweep_generation",
+    "IntegratedContrast",
+    "ParityCheckResult",
+    "ParityContrastResult",
+    "analyze_generation_parity",
+    "analyze_mode_parity",
+    "analyze_raw_file",
+    "conditional_parity_contrasts",
+    "integrate_contrast",
+    "integrate_contrast_windows",
+    "integrated_summary",
+    "load_parity_analysis",
+    "origin_shift_check",
+    "parity_checks",
+    "parity_contrast",
+    "produce_parity_analysis",
+    "reversal_check",
+    "save_parity_analysis",
 ]
