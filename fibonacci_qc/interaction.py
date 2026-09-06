@@ -1,0 +1,168 @@
+"Non additivity remainder I_p(E)=∆T_sub(p,E)-∆T_pot(p,E)-∆T_width(p,E) and one similar for logs. "
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, Mapping, Optional, Sequence
+import numpy as np
+
+from fibonacci_qc import config as cfg
+
+@dataclass(frozen=True)
+class InteractionRemainder:
+    "Interaction remainder array on the site x energy grid"
+    I: np.ndarray
+    I_log: np.ndarray
+    energies: np.ndarray
+    positions: np.ndarray
+    valid: np.ndarray
+    delta_T_sub: np.ndarray
+    delta_T_pot: np.ndarray
+    delta_T_width: np.ndarray
+    delta_log_T_sub: np.ndarray
+    delta_log_T_pot: np.ndarray
+    delta_log_T_width: np.ndarray
+
+def delta_log_t(
+    log_t: np.ndarray,
+    log_t_clean: np.ndarray,
+) -> np.ndarray:
+    "Give log(T_m) - log(T_clean), broadcasting on the energy axis."
+    log_t = np.asarray(log_t, dtype=np.float64)
+    log_t_clean = np.asarray(log_t_clean, dtype=np.float64)
+    if log_t.ndim == 1:
+        return log_t - log_t_clean
+    return log_t - log_t_clean[np.newaxis, :]
+
+def interaction_remainder(
+    delta_t_sub: np.ndarray,
+    delta_t_pot: np.ndarray,
+    delta_t_width: np.ndarray,
+) -> np.ndarray:
+    "I = ΔT_sub-ΔT_pot-ΔT_width."
+    return (
+        np.asarray(delta_t_sub, dtype=np.float64)-np.asarray(delta_t_pot, dtype=np.float64)-np.asarray(delta_t_width, dtype=np.float64)
+    )
+
+def interaction_remainder_log(
+    delta_log_t_sub: np.ndarray,
+    delta_log_t_pot: np.ndarray,
+    delta_log_t_width: np.ndarray,
+) -> np.ndarray:
+    "I_log = Δlog(T_sub) - Δlog(T_pot) - Δlog(T_width)."
+    return (
+        np.asarray(delta_log_t_sub, dtype=np.float64)-np.asarray(delta_log_t_pot, dtype=np.float64)-np.asarray(delta_log_t_width, dtype=np.float64)
+    )
+
+def _require_mode(
+    modes: Mapping[str, Mapping[str, np.ndarray]],
+    mode: str,
+) -> Mapping[str, np.ndarray]:
+    if mode not in modes:
+        raise KeyError(f"mode {mode!r} required for interaction remainder; available: {tuple(modes)}")
+    return modes[mode]
+
+def interaction_from_mode_arrays(
+    *,
+    t_sub: np.ndarray,
+    t_pot: np.ndarray,
+    t_width: np.ndarray,
+    log_t_sub: np.ndarray,
+    log_t_pot: np.ndarray,
+    log_t_width: np.ndarray,
+    t_clean: np.ndarray,
+    log_t_clean: np.ndarray,
+    energies: np.ndarray,
+    valid: Optional[np.ndarray] = None,
+    positions: Optional[np.ndarray] = None,
+) -> InteractionRemainder:
+    "Build interaction remainder from explicit transmission arrays."
+    t_clean = np.asarray(t_clean, dtype=np.float64)
+    log_t_clean = np.asarray(log_t_clean, dtype=np.float64)
+    energies = np.asarray(energies, dtype=np.float64)
+    delta_sub = np.asarray(t_sub, dtype=np.float64) - t_clean[np.newaxis, :]
+    delta_pot = np.asarray(t_pot, dtype=np.float64) - t_clean[np.newaxis, :]
+    delta_width = np.asarray(t_width, dtype=np.float64) - t_clean[np.newaxis, :]
+    dlog_sub = delta_log_t(log_t_sub, log_t_clean)
+    dlog_pot = delta_log_t(log_t_pot, log_t_clean)
+    dlog_width = delta_log_t(log_t_width, log_t_clean)
+    n_pos = delta_sub.shape[0]
+    if positions is None:
+        positions = np.arange(n_pos, dtype=np.int64)
+    else:
+        positions = np.asarray(positions, dtype=np.int64)
+
+    if valid is None:
+        valid = np.ones(n_pos, dtype=bool)
+    else:
+        valid = np.asarray(valid, dtype=bool)
+    return InteractionRemainder(
+        I=interaction_remainder(delta_sub, delta_pot, delta_width),
+        I_log=interaction_remainder_log(dlog_sub, dlog_pot, dlog_width),
+        energies=energies,
+        positions=positions,
+        valid=valid,
+        delta_T_sub=delta_sub,
+        delta_T_pot=delta_pot,
+        delta_T_width=delta_width,
+        delta_log_T_sub=dlog_sub,
+        delta_log_T_pot=dlog_pot,
+        delta_log_T_width=dlog_width,
+    )
+
+def interaction_from_sweeps(
+    modes: Mapping[str, Mapping[str, np.ndarray]],
+    *,
+    t_clean: np.ndarray,
+    log_t_clean: np.ndarray,
+    energies: np.ndarray,
+) -> InteractionRemainder:
+    "Build I_p(E) from multi-mode sweep dictionary."
+    sub = _require_mode(modes, cfg.MODE_SUBSTITUTION)
+    pot = _require_mode(modes, cfg.MODE_POTENTIAL_ONLY)
+    width = _require_mode(modes, cfg.MODE_WIDTH_ONLY)
+    valid = (np.asarray(sub["valid"], dtype=bool)&np.asarray(pot["valid"], dtype=bool)&np.asarray(width["valid"], dtype=bool))
+    positions = np.asarray(sub.get("positions", np.arange(valid.size)),dtype=np.int64,)
+    return interaction_from_mode_arrays(
+        t_sub=sub["T"],
+        t_pot=pot["T"],
+        t_width=width["T"],
+        log_t_sub=sub["log_T"],
+        log_t_pot=pot["log_T"],
+        log_t_width=width["log_T"],
+        t_clean=t_clean,
+        log_t_clean=log_t_clean,
+        energies=energies,
+        valid=valid,
+        positions=positions,
+    )
+
+def interaction_summary(
+    remainder: InteractionRemainder,
+    *,
+    windows: Optional[Mapping[str, Sequence[float]]] = None,
+) -> Dict[str, Dict[str, float]]:
+    "RMS / mean absolute summaries of I over locked energy windows."
+    windows = windows or cfg.ENERGY_WINDOWS
+    energies = remainder.energies
+    valid = remainder.valid
+    out: Dict[str, Dict[str, float]] = {}
+    for name, (e_min, e_max) in windows.items():
+        sel = (energies >= e_min) & (energies <= e_max)
+        if not np.any(sel) or not np.any(valid):
+            out[name] = {
+                "rms_I": float("nan"),
+                "mean_abs_I": float("nan"),
+                "rms_I_log": float("nan"),
+                "mean_abs_I_log": float("nan"),
+            }
+            continue
+        i_win = remainder.I[valid][:, sel]
+        i_log_win = remainder.I_log[valid][:, sel]
+        out[name] = {
+            "rms_I": float(np.sqrt(np.nanmean(i_win ** 2))),
+            "mean_abs_I": float(np.nanmean(np.abs(i_win))),
+            "rms_I_log": float(np.sqrt(np.nanmean(i_log_win ** 2))),
+            "mean_abs_I_log": float(np.nanmean(np.abs(i_log_win))),
+        }
+    return out
