@@ -78,7 +78,33 @@ from fibonacci_qc.parity_analysis import (
     reversal_check,
 )
 
-
+from fibonacci_qc.interaction import (
+    InteractionRemainder,
+    interaction_from_sweeps,
+    interaction_remainder,
+    interaction_remainder_log,
+    interaction_summary,
+)
+from fibonacci_qc.resonance import (
+    MatchResult,
+    Peak,
+    PeakMatch,
+    ResonanceTrack,
+    analyze_generation_resonances,
+    analyze_mode_resonances,
+    detect_peaks,
+    match_peaks_order_preserving,
+    summarize_resonance_tracks,
+    track_resonances,
+)
+from fibonacci_qc.resonance_io import (
+    analyze_raw_interaction_and_resonance,
+    load_interaction_remainder,
+    load_resonance_analysis,
+    produce_resonance_analysis,
+    save_interaction_remainder,
+    save_resonance_analysis,
+)
 
 __all__=[
     "CONFIG",
@@ -143,4 +169,25 @@ __all__=[
     "produce_parity_analysis",
     "reversal_check",
     "save_parity_analysis",
+    "InteractionRemainder",
+    "MatchResult",
+    "Peak",
+    "PeakMatch",
+    "ResonanceTrack",
+    "analyze_generation_resonances",
+    "analyze_mode_resonances",
+    "analyze_raw_interaction_and_resonance",
+    "detect_peaks",
+    "interaction_from_sweeps",
+    "interaction_remainder",
+    "interaction_remainder_log",
+    "interaction_summary",
+    "load_interaction_remainder",
+    "load_resonance_analysis",
+    "match_peaks_order_preserving",
+    "produce_section6_analysis",
+    "save_interaction_remainder",
+    "save_resonance_analysis",
+    "summarize_resonance_tracks",
+    "track_resonances",
 ]
