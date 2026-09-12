@@ -85,6 +85,7 @@ from fibonacci_qc.interaction import (
     interaction_remainder_log,
     interaction_summary,
 )
+
 from fibonacci_qc.resonance import (
     MatchResult,
     Peak,
@@ -97,6 +98,7 @@ from fibonacci_qc.resonance import (
     summarize_resonance_tracks,
     track_resonances,
 )
+
 from fibonacci_qc.resonance_io import (
     analyze_raw_interaction_and_resonance,
     load_interaction_remainder,
@@ -104,6 +106,37 @@ from fibonacci_qc.resonance_io import (
     produce_resonance_analysis,
     save_interaction_remainder,
     save_resonance_analysis,
+)
+
+from fibonacci_qc.geometry_nulls import (
+    GlobalParityStats,
+    PermutationNullResult,
+    analyze_generation_nulls,
+    applicable_strata,
+    global_parity_stats,
+    null_summary_table,
+    permute_parity_within_strata,
+    run_geometry_nulls,
+    stratified_permutation_null,
+)
+
+from fibonacci_qc.nulls_io import (
+    load_nulls_analysis,
+    load_robustness_analysis,
+    produce_nulls_analysis,
+    produce_robustness_analysis,
+    save_nulls_analysis,
+    save_robustness_analysis,
+)
+
+from fibonacci_qc.robustness import (
+    ContrastRobustness,
+    ResonanceRobustness,
+    analyze_generation_robustness,
+    compare_parity_contrast,
+    compare_resonance_spectra,
+    finer_energy_grid,
+    robustness_check_mode,
 )
 
 __all__=[
@@ -190,4 +223,22 @@ __all__=[
     "save_resonance_analysis",
     "summarize_resonance_tracks",
     "track_resonances",
+    "GlobalParityStats",
+    "PermutationNullResult",
+    "ContrastRobustness",
+    "ResonanceRobustness",
+    "analyze_generation_nulls",
+    "analyze_generation_robustness",
+    "applicable_strata",
+    "compare_parity_contrast",
+    "compare_resonance_spectra",
+    "finer_energy_grid",
+    "global_parity_stats",
+    "load_nulls_analysis",
+    "load_robustness_analysis",
+    "null_summary_table",
+    "permute_parity_within_strata",
+    "produce_nulls_analysis",
+    "produce_robustness_analysis",
+    "robustness_check_mode",
 ]
