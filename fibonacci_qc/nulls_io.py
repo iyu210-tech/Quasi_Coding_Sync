@@ -1,0 +1,254 @@
+"Save and load geometry-null and robustness analysis results"
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Dict, Optional, Sequence, Union
+import numpy as np
+
+from fibonacci_qc import config as cfg
+from fibonacci_qc.geometry import build_geometry
+from fibonacci_qc.geometry_nulls import (PermutationNullResult, analyze_generation_nulls, null_summary_table,)
+from fibonacci_qc.raw_data import load_generation_raw
+from fibonacci_qc.robustness import (ContrastRobustness, ResonanceRobustness, analyze_generation_robustness,)
+
+PathLike = Union[str, Path]
+
+def _contrast_to_dict(contrast: ContrastRobustness) -> Dict[str, object]:
+    return {
+        "max_abs_D": contrast.max_abs_D,
+        "rmse_D": contrast.rmse_D,
+        "integrated_baseline": contrast.integrated_baseline,
+        "integrated_fine": contrast.integrated_fine,
+        "integrated_abs_diff": contrast.integrated_abs_diff,
+    }
+
+def _resonance_to_dict(row: ResonanceRobustness) -> Dict[str, object]:
+    return {
+        "position": row.position,
+        "n_peaks_baseline": row.n_peaks_baseline,
+        "n_peaks_fine": row.n_peaks_fine,
+        "n_matched": row.n_matched,
+        "mean_abs_peak_shift": row.mean_abs_peak_shift,
+        "max_abs_peak_shift": row.max_abs_peak_shift,
+        "mean_abs_delta_E_baseline": row.mean_abs_delta_E_baseline,
+        "mean_abs_delta_E_fine": row.mean_abs_delta_E_fine,
+        "delta_E_summary_diff": row.delta_E_summary_diff,
+    }
+
+def save_nulls_analysis(
+    analysis: Dict[str, object],
+    path: PathLike,
+    *,
+    metadata: Optional[Dict[str, object]] = None,
+) -> Path:
+    "Permutation-null results to .npz + JSON metadata."
+    cfg.ensure_output_dirs()
+    out = Path(path)
+    if not out.is_absolute():
+        out = cfg.OUTPUT_ANALYSIS / out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    generation = int(analysis["generation"])
+    energies = np.asarray(analysis["energies"], dtype=np.float64)
+    np_payload: Dict[str, object] = {
+        "generation": np.array(generation, dtype=np.int64),
+        "energies": energies,
+        "n_replicates": np.array(analysis["n_replicates"], dtype=np.int64),
+        "seed": np.array(analysis["seed"], dtype=np.int64),
+    }
+    json_modes: Dict[str, object] = {}
+    modes: Dict[str, Dict[str, PermutationNullResult]] = analysis["modes"]  # type: ignore[assignment]
+    for mode, strata in modes.items():
+        json_modes[mode] = {}
+        for family, result in strata.items():
+            prefix = f"{mode}__{family}__"
+            np_payload[prefix + "null_S_max"] = result.null_S_max
+            np_payload[prefix + "null_S_int"] = result.null_S_int
+            np_payload[prefix + "D_observed"] = result.D_observed
+            json_modes[mode][family] = {
+                "S_max": result.observed.S_max,
+                "S_int": result.observed.S_int,
+                "centered_S_max": result.centered_S_max,
+                "centered_S_int": result.centered_S_int,
+                "p_S_max": result.p_S_max,
+                "p_S_int": result.p_S_int,
+                "n_replicates": result.n_replicates,
+                "seed": result.seed,
+            }
+    np.savez_compressed(out, **np_payload)
+    meta = {
+        "npz": out.name,
+        "generation": generation,
+        "geometry_metadata": analysis.get("geometry_metadata"),
+        "summary": null_summary_table(analysis),
+        "modes": json_modes,
+        "run_metadata": metadata or {},
+    }
+    out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+    return out
+
+def load_nulls_analysis(path: PathLike) -> Dict[str, object]:
+    "Load saved geometry null analysis bundle"
+    out = Path(path)
+    if not out.is_absolute() and not out.exists():
+        candidate = cfg.OUTPUT_ANALYSIS / out
+        if candidate.exists():
+            out = candidate
+    meta_path = out.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    with np.load(out, allow_pickle=True) as data:
+        arrays = {key: data[key] for key in data.files}
+    return {"arrays": arrays, "metadata": meta}
+
+def save_robustness_analysis(
+    analysis: Dict[str, object],
+    path: PathLike,
+    *,
+    metadata: Optional[Dict[str, object]] = None,
+) -> Path:
+    "Persist robustness comparisons to .npz + JSON metadata."
+    cfg.ensure_output_dirs()
+    out = Path(path)
+    if not out.is_absolute():
+        out = cfg.OUTPUT_ANALYSIS / out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    generation = int(analysis["generation"])
+    np_payload: Dict[str, object] = {"generation": np.array(generation, dtype=np.int64),}
+    json_modes: Dict[str, object] = {}
+    modes: Dict[str, object] = analysis["modes"]
+    for mode, payload in modes.items():
+        prefix = f"{mode}__"
+        np_payload[prefix + "D_baseline"] = payload["D_baseline"]
+        np_payload[prefix + "D_fine"] = payload["D_fine"]
+        np_payload[prefix + "energies_baseline"] = payload["energies_baseline"]
+        np_payload[prefix + "energies_fine"] = payload["energies_fine"]
+        contrast: ContrastRobustness = payload["contrast"]
+        resonance_rows: Sequence[ResonanceRobustness] = payload["resonance"]
+        json_modes[mode] = {
+            "n_energy_baseline": payload["n_energy_baseline"],
+            "n_energy_fine": payload["n_energy_fine"],
+            "contrast": _contrast_to_dict(contrast),
+            "resonance": [_resonance_to_dict(r) for r in resonance_rows],
+        }
+    np.savez_compressed(out, **np_payload)
+    meta = {
+        "npz": out.name,
+        "generation": generation,
+        "geometry_metadata": analysis.get("geometry_metadata"),
+        "modes": json_modes,
+        "run_metadata": metadata or {},
+    }
+    out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
+    return out
+
+def load_robustness_analysis(path: PathLike) -> Dict[str, object]:
+    "Load saved robustness analysis bundle"
+    out = Path(path)
+    if not out.is_absolute() and not out.exists():
+        candidate = cfg.OUTPUT_ANALYSIS / out
+        if candidate.exists():
+            out = candidate
+    meta_path = out.with_suffix(".meta.json")
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+    with np.load(out, allow_pickle=True) as data:
+        arrays = {key: data[key] for key in data.files}
+    return {"arrays": arrays, "metadata": meta}
+
+def produce_nulls_analysis(
+    raw_dir: PathLike,
+    *,
+    generations: Optional[Sequence[int]] = None,
+    modes: Optional[Sequence[str]] = None,
+    n_replicates: int = cfg.PERMUTATION_REPLICATES,
+    seed: int = 0,
+    output_dir: PathLike = "nulls",
+) -> Dict[str, object]:
+    "Batch geometry-null analysis over the study directory."
+    cfg.ensure_output_dirs()
+    raw_root = Path(raw_dir)
+    if not raw_root.is_absolute():
+        raw_root = cfg.OUTPUT_RAW / raw_root
+    out_root = Path(output_dir)
+    if not out_root.is_absolute():
+        out_root = cfg.OUTPUT_ANALYSIS / out_root
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    if generations is None:
+        generations = sorted(
+            int(p.name[1:])
+            for p in raw_root.glob("n*")
+            if p.is_dir() and p.name[1:].isdigit()
+        )
+    manifest: Dict[str, object] = {
+        "files": [],
+        "generations": list(generations),
+        "n_replicates": n_replicates,
+        "seed": seed,
+    }
+    for generation in generations:
+        gen_dir = raw_root / f"n{generation:02d}"
+        raw_files = sorted(gen_dir.glob("*.npz"))
+        if not raw_files:
+            continue
+        mode_data: Dict[str, Dict[str, np.ndarray]] = {}
+        energies = None
+        t_clean = None
+        for raw_file in raw_files:
+            mode_name = raw_file.stem
+            if modes is not None and mode_name not in modes:
+                continue
+            raw = load_generation_raw(raw_file)
+            if energies is None:
+                energies = raw["energies"]
+                t_clean = raw["T_clean"]
+            mode_data[mode_name] = raw["modes"][mode_name]  # type: ignore[index]
+        if not mode_data:
+            continue
+
+        bundle = {
+            "generation": generation,
+            "energies": energies,
+            "T_clean": t_clean,
+            "modes": mode_data,
+        }
+        geom = build_geometry(generation)
+        analysis = analyze_generation_nulls(
+            bundle,
+            geom,
+            modes=list(mode_data),
+            n_replicates=n_replicates,
+            seed=seed,
+        )
+        out = save_nulls_analysis(analysis, out_root / f"n{generation:02d}" / "nulls.npz", metadata={"source_raw_dir": str(raw_root)},)
+        manifest["files"].append(str(out.relative_to(out_root)))
+    manifest_path = out_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
+
+def produce_robustness_analysis(
+    *,
+    generations: Optional[Sequence[int]] = None,
+    modes: Optional[Sequence[str]] = None,
+    energies_baseline: Optional[np.ndarray] = None,
+    energies_fine: Optional[np.ndarray] = None,
+    output_dir: PathLike = "robustness",
+) -> Dict[str, object]:
+    "Batch robustness checks written under output/analysis/robustness"
+    cfg.ensure_output_dirs()
+    gens = list(generations or cfg.GENERATIONS)
+    modes = list(modes or cfg.DEFECT_MODES)
+    out_root = Path(output_dir)
+    if not out_root.is_absolute():
+        out_root = cfg.OUTPUT_ANALYSIS / out_root
+    out_root.mkdir(parents=True, exist_ok=True)
+    manifest: Dict[str, object] = {"files": [], "generations": gens, "modes": modes}
+    for generation in gens:
+        analysis = analyze_generation_robustness(generation, modes=modes, energies_baseline=energies_baseline, energies_fine=energies_fine,)
+        out = save_robustness_analysis(analysis, out_root / f"n{generation:02d}" / "robustness.npz",)
+        manifest["files"].append(str(out.relative_to(out_root)))
+    manifest_path = out_root / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    manifest["manifest_path"] = str(manifest_path)
+    return manifest
