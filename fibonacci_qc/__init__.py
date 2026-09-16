@@ -139,6 +139,25 @@ from fibonacci_qc.robustness import (
     robustness_check_mode,
 )
 
+from fibonacci_qc.scaling import (
+    ModeScalingResult,
+    ScalingFitPoint,
+    analyze_mode_scaling,
+    analyze_scaling,
+    classify_direction,
+    common_support_mask,
+    fit_loglog_scaling,
+    fit_scaling_curve,
+    paired_alpha_contrast,
+    scaling_summary,
+)
+
+from fibonacci_qc.scaling_io import (
+    load_scaling_analysis,
+    produce_scaling_analysis,
+    save_scaling_analysis,
+)
+
 __all__=[
     "CONFIG",
     "FibonacciGeometry",
@@ -241,4 +260,21 @@ __all__=[
     "produce_nulls_analysis",
     "produce_robustness_analysis",
     "robustness_check_mode",
+    "run_geometry_nulls",
+    "save_nulls_analysis",
+    "save_robustness_analysis",
+    "stratified_permutation_null",
+    "ModeScalingResult",
+    "ScalingFitPoint",
+    "analyze_mode_scaling",
+    "analyze_scaling",
+    "classify_direction",
+    "common_support_mask",
+    "fit_loglog_scaling",
+    "fit_scaling_curve",
+    "load_scaling_analysis",
+    "paired_alpha_contrast",
+    "produce_scaling_analysis",
+    "save_scaling_analysis",
+    "scaling_summary",
 ]
