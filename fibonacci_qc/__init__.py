@@ -158,6 +158,44 @@ from fibonacci_qc.scaling_io import (
     save_scaling_analysis,
 )
 
+from fibonacci_qc.drivers import (
+    main_analyze,
+    main_figures,
+    main_raw,
+    run_analyze_driver,
+    run_figures_driver,
+    run_raw_driver,
+)
+
+from fibonacci_qc.pipeline import (
+    clear_output_tree,
+    create_freeze_tag,
+    run_pipeline,
+    verify_reproducibility,
+    write_freeze_snapshot,
+)
+
+from fibonacci_qc.plotting import (
+    plot_clean_transmission,
+    plot_defect_transmission,
+    plot_integrated_metrics,
+    plot_interaction_remainder,
+    plot_null_histogram,
+    plot_parity_curve,
+    plot_resonance_shifts,
+    plot_scaling_exponents,
+    plot_transmission_heatmap,
+    produce_figures,
+    save_figure,
+)
+
+from fibonacci_qc.regression import (
+    assert_matches_regression_fixture,
+    compute_regression_reference,
+    load_regression_fixture,
+    write_regression_fixture,
+)
+
 __all__=[
     "CONFIG",
     "FibonacciGeometry",
@@ -277,4 +315,30 @@ __all__=[
     "produce_scaling_analysis",
     "save_scaling_analysis",
     "scaling_summary",
+    "main_analyze",
+    "main_figures",
+    "main_raw",
+    "run_analyze_driver",
+    "run_figures_driver",
+    "run_raw_driver",
+    "clear_output_tree",
+    "create_freeze_tag",
+    "run_pipeline",
+    "verify_reproducibility",
+    "write_freeze_snapshot",
+    "plot_clean_transmission",
+    "plot_defect_transmission",
+    "plot_integrated_metrics",
+    "plot_interaction_remainder",
+    "plot_null_histogram",
+    "plot_parity_curve",
+    "plot_resonance_shifts",
+    "plot_scaling_exponents",
+    "plot_transmission_heatmap",
+    "produce_figures",
+    "save_figure",
+    "assert_matches_regression_fixture",
+    "compute_regression_reference",
+    "load_regression_fixture",
+    "write_regression_fixture",
 ]
