@@ -118,7 +118,7 @@ def delta_t(
         log_T=t_result.log_T,
         status = t_result.status,
         T_clean = t_clean_val,
-        delta_T=t_result.T-t_clean_val
+        delta_T=t_result.T-t_clean_val,
         valid=True,
     )
 

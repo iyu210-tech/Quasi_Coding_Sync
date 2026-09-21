@@ -93,7 +93,7 @@ def save_generation_raw(
     "Save a generations heatmaps and JSON metadata"
     cfg.ensure_output_dirs()
     out = Path(path)
-    if not out.isabsolute():
+    if not out.is_absolute():
         out = cfg.OUTPUT_RAW / out
     out.parent.mkdir(parents=True, exist_ok = True)
 

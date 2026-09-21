@@ -45,7 +45,7 @@ class TransmissionResult:
 
 def q_number(energy_ev: ArrayLike, potential_ev: ArrayLike) -> np.ndarray:
     "Return Q with stable E approx. V"
-    e = np.asarray(energy_ev, dtype=npfloat64)
+    e = np.asarray(energy_ev, dtype=np.float64)
     v = np.asarray(potential_ev, dtype = np.float64)
     arg = (e-v) * cfg.KAPPA2_PREFACTOR_PER_EV_NM2
     out = np.zeros(np.broadcast_shapes(e.shape, v.shape), dtype = np.complex128)
@@ -165,7 +165,7 @@ def _stack_s_matrix_redheffer(
     q0 = q_number(energy_ev, v_lead_ev).item()
     q_layers = q_number(energy_ev, potentials_ev)
     s_total = interface_s_matrix(q0, q_layers[0])
-    s_total = redheffer_star(s_total, [propagation_s_matrix(q_layers[0], widths_nm[0])])
+    s_total = redheffer_star(s_total, propagation_s_matrix(q_layers[0], widths_nm[0]))
 
     for idx in range(1, widths_nm.size):
         s_total = redheffer_star(
@@ -191,7 +191,7 @@ def slab_s_matrix(
     "S matrix for single layer embedded in vacuum leads"
     q_0 = q_number(energy_ev, v_lead_ev).item()
     q_layer = q_number(energy_ev, potential_ev).item()
-    return layer_s_matrix(q0, q_layer, q0, width_nm)
+    return layer_s_matrix(q_0, q_layer, q_0, width_nm)
 
 def stack_s_matrix(
     widths_nm: np.ndarray,
@@ -254,7 +254,7 @@ def transmission_from_transfer(
 def safe_log_t(
     t: float,
     *,
-    floor: float = cfg.cfg.TOLERANCES.log_t_floor,
+    floor: float = cfg.TOLERANCES.log_t_floor,
 ) -> Tuple[float, TransferStatus]:
     "Return log(T)"
     if not np.isfinite(t):

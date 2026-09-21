@@ -61,7 +61,7 @@ TWO_SITE_MODES: Tuple[str, ...] = (MODE_PHASON,)
 #Motif families
 SITE_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"site_letter": 0, "site_3": 1, "site_5": 1})
 
-BOND_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"bond_letter": 0, "bond_4": 1, "bond_6": 2})
+BOND_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"bond_pair": 0, "bond_4": 1, "bond_6": 2})
 
 SITE_MOTIF_FAMILIES: Tuple[str, ...] = tuple(SITE_MOTIF_RADIUS)
 BOND_MOTIF_FAMILIES: Tuple[str, ...] = tuple(BOND_MOTIF_RADIUS)
@@ -74,6 +74,11 @@ GEOMETRY_STRATA: Tuple[str, ...] = ("site_letter", "site_3", "site_5", "bond_pai
 PERMUTATION_REPLICATES = 500
 ALPHA_FLAT_THRESHOLD = 0.05
 FIT_GENERATION_WINDOWS: Tuple[Tuple[int, int], ...] = ((10,15), (10,17), (10,20))
+
+SCALING_D_FLOOR = 1e-12
+SCALING_MIN_USABLE_GENERATIONS = 3
+SCALING_LOO_ALPHA_TOL = 0.05
+SCALING_RMSE_MAX = 0.5
 
 ENERGY_WINDOWS: Mapping[str, Tuple[float, float]] = MappingProxyType({
     "full": (E_MIN_EV, E_MAX_EV),
@@ -145,6 +150,10 @@ class SimulationConfig:
     geometry_strata: Tuple[str, ...] = GEOMETRY_STRATA
     permutation_replicates: int = PERMUTATION_REPLICATES
     alpha_flat_threshold: float = ALPHA_FLAT_THRESHOLD
+    scaling_d_floor: float = SCALING_D_FLOOR
+    scaling_min_usable_generations: int = SCALING_MIN_USABLE_GENERATIONS
+    scaling_loo_alpha_tol: float = SCALING_LOO_ALPHA_TOL
+    scaling_rmse_max: float = SCALING_RMSE_MAX
     fit_generation_windows: Tuple[Tuple[int, int], ...] = FIT_GENERATION_WINDOWS
     energy_windows: Mapping[str, Tuple[float, float]] = ENERGY_WINDOWS
     tolerances: Tolerances = TOLERANCES
@@ -173,6 +182,10 @@ class SimulationConfig:
             "geometry_strata": list(self.geometry_strata),
             "permutation_replicates": self.permutation_replicates,
             "alpha_flat_threshold": self.alpha_flat_threshold,
+            "scaling_d_floor": self.scaling_d_floor,
+            "scaling_min_usable_generations": self.scaling_min_usable_generations,
+            "scaling_loo_alpha_tol": self.scaling_loo_alpha_tol,
+            "scaling_rmse_max": self.scaling_rmse_max,
             "fit_generation_windows": [list(w) for w in self.fit_generation_windows],
             "energy_windows": {k: list(v) for k, v in self.energy_windows.items()},
             "tolerances": asdict(self.tolerances),

@@ -222,7 +222,7 @@ def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[Fibonacc
         ok, _ = validate_defect_position(mode, int(p), geom)
         valid_mask[p] = ok
     t_arr = np.full((n_pos, energies.size), np.nan, dtype=np.float64)
-    log_arr = np.full((np_pos, energies.size), np.nan, dtype=np.float64)
+    log_arr = np.full((n_pos, energies.size), np.nan, dtype=np.float64)
     status_arr = np.empty((n_pos, energies.size), dtype=object)
 
     t_clean=np.empty(energies.size, dtype = np.float64)
@@ -279,7 +279,7 @@ def validate_against_reference(
             elif mode == cfg.MODE_PHASON:
                 positions = range(geometry.n_bonds)
             else:
-                positions = rnage(geometry.n_sites)
+                positions = range(geometry.n_sites)
 
             for p in positions:
                 fast = fast_transmission(mode, int(p), cache, geometry)

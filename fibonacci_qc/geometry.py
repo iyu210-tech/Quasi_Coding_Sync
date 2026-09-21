@@ -121,7 +121,7 @@ def _motif_array(letters: np.ndarray, n_positions:int, radius: int, kind: str) -
             out[p] = bond_window(letters, p, radius)
     return out
 
-@dataclasses(frozen=True)
+@dataclass(frozen=True)
 class FibonacciGeometry:
     """Fib stack at one generation, with geometry labels
     Array lengths:
@@ -194,7 +194,7 @@ class FibonacciGeometry:
         }
 
 
-def map_letters_to_layers(letters: np.ndarray, width_map: Mapping[str,float] = cfg.LAYER_WIDth_NM, potential_map: Mapping[str,float] = cfg.LAYER_POTENTIAL_EV,
+def map_letters_to_layers(letters: np.ndarray, width_map: Mapping[str,float] = cfg.LAYER_WIDTH_NM, potential_map: Mapping[str,float] = cfg.LAYER_POTENTIAL_EV,
 ) -> Tuple[np.ndarray, np.ndarray]:
     "Map AB letters onto widths and potentials"
     widths = np.empty(letters.shape, dtype=np.float64)
@@ -216,7 +216,7 @@ def build_geometry(n:int) -> FibonacciGeometry:
     n_sites = letters.size
     widths, pots = map_letters_to_layers(letters)
 
-    site_index = np.arrange(n_sites, dtype=np.int64)
+    site_index = np.arange(n_sites, dtype=np.int64)
     site_parity = (site_index % 2).astype(np.int8)
     site_motifs = {
         family: _motif_array(letters, n_sites, radius, kind = "site")
@@ -224,7 +224,7 @@ def build_geometry(n:int) -> FibonacciGeometry:
     }
 
     n_bonds = max(n_sites - 1, 0)
-    bond_index = np.arrage(n_bonds, dtype = np.int64)
+    bond_index = np.arange(n_bonds, dtype = np.int64)
     bond_parity = (bond_index % 2).astype(np.int8)
     if n_bonds:
         bond_pairs = np.array(
@@ -245,11 +245,11 @@ def build_geometry(n:int) -> FibonacciGeometry:
             raise RuntimeError("bond_pair motifs disagree with bond_pairs")
 
     return FibonacciGeometry(
-        generation=n
-        word=word
-        letters=letters
-        widths_nm=widths
-        potentials_ev=pots
+        generation=n,
+        word=word,
+        letters=letters,
+        widths_nm=widths,
+        potentials_ev=pots,
         site_index=site_index,
         site_parity=site_parity,
         site_motifs=site_motifs,

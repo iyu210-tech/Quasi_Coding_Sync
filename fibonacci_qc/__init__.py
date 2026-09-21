@@ -222,14 +222,14 @@ __all__=[
     "DefectedStack",
     "DefectTransmissionResult",
     "allowed_positions",
-    "apply_defect"
+    "apply_defect",
     "apply_phason",
     "apply_potential_only",
     "apply_substitution",
     "apply_width_only",
     "delta_t",
-    "load_delta_t"
-    "reference_sweep"
+    "load_delta_t",
+    "reference_sweep",
     "reference_transmission",
     "save_delta_t",
     "validate_defect_position",
@@ -275,7 +275,7 @@ __all__=[
     "load_interaction_remainder",
     "load_resonance_analysis",
     "match_peaks_order_preserving",
-    "produce_section6_analysis",
+    "produce_resonance_analysis",
     "save_interaction_remainder",
     "save_resonance_analysis",
     "summarize_resonance_tracks",
