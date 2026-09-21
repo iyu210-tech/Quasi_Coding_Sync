@@ -254,7 +254,7 @@ def build_geometry(n:int) -> FibonacciGeometry:
         site_parity=site_parity,
         site_motifs=site_motifs,
         bond_index=bond_index,
-        bond_parity=bond_parity
+        bond_parity=bond_parity,
         bond_pairs=bond_pairs,
         phason_valid=phason_valid,
         bond_motifs=bond_motifs
