@@ -58,6 +58,10 @@ def q_number(energy_ev: ArrayLike, potential_ev: ArrayLike) -> np.ndarray:
 def _as_complex_scalar(value: complex | float) -> complex:
     return complex(value)
 
+_Q_ABS_TOL = 1e-14
+def _q_near_zero(q: complex, *, tol: float = _Q_ABS_TOL) -> bool:
+    return abs(q) < tol
+
 def _sin_qd_over_q(q: complex, width_nm: float) -> complex:
     "Stable sin(Q d)/Q tends to d as Q goes to 0"
     beta = q*width_nm
@@ -107,7 +111,9 @@ def layer_s_matrix(
 
     if width_nm == 0.0:
         return interface_s_matrix(q_left, q_right)
-
+    if _q_near_zero(q_layer) and _q_near_zero(q_left - q_right):
+        # Equal leads, threshold layer Abeles + transfer -> S
+        return transfer_to_s_matrix(abeles_matrix(q_layer, width_nm), q_left)
     r01 = (q_left - q_layer) / (q_left + q_layer)
     r12 = (q_layer - q_right) / (q_layer + q_right)
     t01 = 2.0 * q_left / (q_left + q_layer)
@@ -130,10 +136,13 @@ def interface_s_matrix(q_left: complex, q_right: complex) -> SMatrix:
     "Zero thickness interface from q_left to q_right"
     q_left = _as_complex_scalar(q_left)
     q_right = _as_complex_scalar(q_right)
-    r = (q_left - q_right) / (q_left + q_right)
-    t_lr = 2.0 * q_left / (q_left + q_right)
-    t_rl = 2.0 * q_right / (q_left + q_right)
-    return np.array([[r, t_rl],[t_lr, -r]], dtype=np.complex128)
+    if _q_near_zero(q_left) and _q_near_zero(q_right):
+        return vacuum_passthrough_s_matrix()
+    denom = q_left + q_right
+    r = (q_left - q_right) / denom
+    t_lr = 2.0 * q_left / denom
+    t_rl = 2.0 * q_right / denom
+    return np.array([[r, t_rl], [t_lr, -r]], dtype=np.complex128)
     
 
 def propagation_s_matrix(q: complex, width_nm: float) ->SMatrix:
@@ -164,22 +173,10 @@ def _stack_s_matrix_redheffer(
     energy_ev: float,
     v_lead_ev: float,
 ) -> SMatrix:
-    "Build stack S matrix from Redheffer propagation and interface"
+    "Build stack S with per layer Abeles product + one transfer -> S."
     q0 = q_number(energy_ev, v_lead_ev).item()
-    q_layers = q_number(energy_ev, potentials_ev)
-    s_total = interface_s_matrix(q0, q_layers[0])
-    s_total = redheffer_star(s_total, propagation_s_matrix(q_layers[0], widths_nm[0]))
-
-    for idx in range(1, widths_nm.size):
-        s_total = redheffer_star(
-            s_total, interface_s_matrix(q_layers[idx-1], q_layers[idx])
-        )
-        s_total = redheffer_star(
-            s_total, propagation_s_matrix(q_layers[idx], widths_nm[idx])
-        )
-
-    s_total = redheffer_star(s_total, interface_s_matrix(q_layers[-1], q0))
-    return s_total
+    transfer = transfer_matrix_stack(widths_nm, potentials_ev, energy_ev)
+    return transfer_to_s_matrix(transfer, q0)
 
 def vacuum_passthrough_s_matrix() -> SMatrix:
     "Connection between vacuum leads"
@@ -202,7 +199,6 @@ def stack_s_matrix(
     energy_ev: float,
     v_lead_ev: float = cfg.V_LEAD_EV,
 ) -> SMatrix:
-    "Stack S matrix composing with Redheffer star products, at edges where E roughly equals V, go back to transfer matrix conversion"
     widths = np.asarray(widths_nm, dtype=np.float64)
     pots = np.asarray(potentials_ev, dtype=np.float64)
     if widths.shape != pots.shape:
@@ -211,13 +207,7 @@ def stack_s_matrix(
         raise ValueError("widths_nm and potentials_ev must be 1D")
     if widths.size == 0:
         return vacuum_passthrough_s_matrix()
-
-    try:
-        return _stack_s_matrix_redheffer(widths, pots, energy_ev, v_lead_ev) 
-    except FloatingPointError:
-        q0 = q_number(energy_ev, v_lead_ev).item()
-        transfer = transfer_matrix_stack(widths, pots, energy_ev)
-        return transfer_to_s_matrix(transfer, q0)
+    return _stack_s_matrix_redheffer(widths, pots, energy_ev, v_lead_ev)
 
 def abeles_matrix(q: complex, width_nm: float) -> np.ndarray:
     "2x2 Abeles characteristic matrix for one uniform layer"
@@ -243,16 +233,9 @@ def transfer_matrix_stack(
         m_total = abeles_matrix(q, width) @ m_total
     return m_total
 
-def transmission_from_transfer(
-    transfer: np.ndarray, q_lead: complex
-) -> float:
-    "Transmission from Abeles transfer matrix & lead wave number"
-    q_lead = _as_complex_scalar(q_lead)
-    m11, m12 = transfer[0,0], transfer[0,1]
-    m21, m22 = transfer[1,0], transfer[1,1]
-    denom = m11 * q_lead + m12 * q_lead**2 + m21 + m22 * q_lead
-    t_amp = 2.0 * q_lead / denom
-    return float(np.abs(t_amp)**2)
+def transmission_from_transfer(transfer: np.ndarray, q_lead: complex) -> float:
+    s = transfer_to_s_matrix(transfer, q_lead)
+    return float(np.abs(s[1, 0]) ** 2)
 
 def safe_log_t(
     t: float,

@@ -12,10 +12,12 @@ from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
 from fibonacci_qc.scattering import (
     SMatrix,
     TransmissionResult,
+    abeles_matrix,
     interface_s_matrix,
     propagation_s_matrix,
     q_number,
     redheffer_star,
+    transfer_to_s_matrix,
     transmission_from_s,
     vacuum_passthrough_s_matrix,
 )
@@ -73,7 +75,8 @@ class StackCache:
     q_layers: np.ndarray
     widths_nm: np.ndarray
     potentials_ev: np.ndarray
-    prefix: np.ndarray #Shape (N+1, 2, 2)
+    prefix_M: np.ndarray #Shape (N+1, 2, 2)
+    suffix_M: np.ndarray
 
     @classmethod
     def build(
@@ -85,18 +88,20 @@ class StackCache:
     ) -> "StackCache":
         widths = np.asarray(geometry.widths_nm, dtype = np.float64)
         pots = np.asarray(geometry.potentials_ev, dtype=np.float64)
-        n_sites = widths.size
+        n_sites = int(widths.size)
+        q0 = q_number(energy_ev, v_lead_ev).item()
+        q_layers = q_number(energy_ev, pots)
 
         q0=q_number(energy_ev,v_lead_ev).item()
         q_layers = q_number(energy_ev, pots)
 
-        prefix = np.empty((n_sites+1,2,2), dtype=np.complex128)
-        prefix[0] = vacuum_passthrough_s_matrix()
-        current = prefix[0]
+        prefix_M = np.empty((n_sites+1,2,2), dtype=np.complex128)
+        suffix_M = np.empty((n_sites + 1, 2, 2), dtype=np.complex128)
+        prefix_M[0] = np.eye(2, dtype = np.complex128)
         for idx in range(n_sites):
-            for element in _stack_elements(q0, q_layers, widths, n_sites, start_site=idx, end_site = idx+1):
-                current = redheffer_star(current, element)
-            prefix[idx+1] = current
+            prefix_M[idx+1] = abeles_matrix(q_layers[idx], float(widths[idx])) @ prefix_M[idx]
+        suffix_M[n_sites] = np.eye(2, dtype=np.complex128)
+        #continue update from here
 
         return cls(energy_ev=float(energy_ev), generation = geometry.generation,
                    n_sites=n_sites, q_lead=q0, q_layers=q_layers, widths_nm=widths,

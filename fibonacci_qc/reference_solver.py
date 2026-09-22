@@ -161,15 +161,24 @@ def reference_sweep(
             status_arr[p_idx, :] = "invalid"
             continue
         for e_idx, energy in enumerate(energies.flat):
-            result = delta_t(
-                mode, int(p), float(energy), geometry = geom, t_clean=float(t_clean.flat[e_idx]), v_lead_ev=v_lead_ev,
-            )
+            result = delta_t(mode, int(p), float(energy), geometry=geom, t_clean=float(t_clean.flat[e_idx]), v_lead_ev=v_lead_ev)
             t_arr[p_idx, e_idx] = result.T
             log_arr[p_idx, e_idx] = result.log_T
             delta_arr[p_idx, e_idx] = result.delta_T
             status_arr[p_idx, e_idx] = result.status
-        return{"mode": np.array(mode), "generation": np.array(geom.generation,dtype=np.int64), "positions": pos, "energies": energies, "T": t_arr, 
-               "log_T": log_arr, "delta_T": delta_arr, "T_clean": t_clean, "valid": valid_arr, "status": status_arr,}
+
+    return {
+        "mode": np.array(mode),
+        "generation": np.array(geom.generation, dtype=np.int64),
+        "positions": pos,
+        "energies": energies,
+        "T": t_arr,
+        "log_T": log_arr,
+        "delta_T": delta_arr,
+        "T_clean": t_clean,
+        "valid": valid_arr,
+        "status": status_arr,
+    }
 
 def save_delta_t(
     sweep: Dict[str, np.ndarray],
