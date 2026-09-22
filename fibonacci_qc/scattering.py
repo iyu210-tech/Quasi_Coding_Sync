@@ -119,7 +119,7 @@ def layer_s_matrix(
 
     s11 = (r01+r12 * phase2) / denom
     s21 = (t01*t12*phase)/denom
-    s22 = (r12 + r01 * phase2) / denom
+    s22 = -(r12 + r01 * phase2) / denom
     t21 = 2.0 * q_right / (q_layer + q_right)
     t10 = 2.0* q_layer / (q_layer + q_left)
     s12 = (t21*t10*phase) / denom
@@ -148,12 +148,15 @@ def transfer_to_s_matrix(transfer:np.ndarray, q_lead: complex) -> SMatrix:
     q_lead = _as_complex_scalar(q_lead)
     m11, m12 = transfer[0,0], transfer[0,1]
     m21, m22 = transfer[1,0], transfer[1,1]
-    denom = m11 * q_lead + m12 * q_lead**2 + m21 + m22 * q_lead
+    denom = -m11 * q_lead + m12 * q_lead**2 + m21 - m22 * q_lead
     if abs(denom) < 1e-300:
         raise FloatingPointError("Transfer to S denominator numerically singular")
-    t = 2.0 * q_lead / denom
-    r = (m11 * q_lead + m12 * q_lead**2 - m21 - m22 * q_lead) / denom
-    return np.array([[r,t],[t,r]], dtype=np.complex128)
+    det_m = m11 * m22 - m12 * m21
+    s11 = (m11 * q_lead + m12 * q_lead**2 - m21 - m22 * q_lead) / denom
+    s22 = (-m11 * q_lead + m12 * q_lead**2 - m21 + m22 * q_lead) / denom
+    s21 = -2.0 * q_lead * det_m / denom
+    s12 = -2.0 * q_lead / denom  # equals s21 when det(M) = 1
+    return np.array([[s11, s12], [s21, s22]], dtype=np.complex128)
 
 def _stack_s_matrix_redheffer(
     widths_nm: np.ndarray,
