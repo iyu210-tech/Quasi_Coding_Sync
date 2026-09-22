@@ -248,10 +248,10 @@ def safe_log_t(
     if t < 0.0:
         return float("nan"), "invalid"
     if t == 0.0:
-        return floor, "underflow"
+        return float("nan"), "underflow"
     log_t = float(np.log(t))
     if not np.isfinite(log_t):
-        return floor, "overflow"
+        return float("nan"), "overflow"
     if log_t < floor:
         return floor, "underflow"
     return log_t, "ok"
@@ -271,12 +271,24 @@ def transmission_from_s(
     "Extract T=|S21|^2"
     s_matrix = np.asarray(s_matrix, dtype=np.complex128)
     s21 = complex(s_matrix[1,0])
-    t=float(np.abs(s21)**2)
+    abs_amp = float(np.abs(s21))
+    t = abs_amp * abs_amp
     status = _classify_transmission(t)
-    log_t, log_status = safe_log_t(t)
+    if abs_amp == 0.0 or not np.isfinite(abs_amp):
+        log_t, log_status = float("nan"), "underflow"
+    else:
+        log_t = float(2.0 * np.log(abs_amp))
+        floor = cfg.TOLERANCES.log_t_floor
+        if log_t < floor:
+            log_status = "underflow"
+        elif not np.isfinite(log_t):
+            log_t, log_status = float("nan"), "overflow"
+        else:
+            log_status = "ok"
     if status == "ok" and log_status != "ok":
         status = log_status
     return TransmissionResult(T=t, log_T=log_t, status=status, S21=s21)
+#continue update w/ delta_log_t in interaction
 
 def stack_transmission(
     widths_nm: np.ndarray,

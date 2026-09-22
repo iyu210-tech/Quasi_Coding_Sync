@@ -101,48 +101,45 @@ class StackCache:
         for idx in range(n_sites):
             prefix_M[idx+1] = abeles_matrix(q_layers[idx], float(widths[idx])) @ prefix_M[idx]
         suffix_M[n_sites] = np.eye(2, dtype=np.complex128)
-        #continue update from here
-
+        for idx in range(n_sites -1, -1, -1):
+            suffix_M[idx] = suffix_M[idx+1] @ abeles_matrix(q_layers[idx], float(widths[i]))
+        
         return cls(energy_ev=float(energy_ev), generation = geometry.generation,
                    n_sites=n_sites, q_lead=q0, q_layers=q_layers, widths_nm=widths,
-                   potentials_ev = pots, prefix=prefix,)
+                   potentials_ev = pots, prefix_M=prefix_M, suffix_M=suffix_M)
 
     def clean_s_matrix(self) -> SMatrix:
         if self.n_sites == 0:
             return vacuum_passthrough_s_matrix()
-        elements = _stack_elements(self.q_lead, self.q_layers, self.widths_nm, self.n_sites)
-        return _compose_elements(elements)
+        return transfer_to_s_matrix(self.prefix_M[self.n_sites], self.q_lead)
 
     def clean_transmission(self) -> TransmissionResult:
         return transmission_from_s(self.clean_s_matrix(), self.q_lead)
 
-    def suffix(self, start_site:int, *, q_layers: Optional[np.ndarray]=None, widths_nm: Optional[np.ndarray]=None,) -> SMatrix:
-        "Elements through start site through exit interface"
-        if start_site >= self.n_sites:
-            return vacuum_passthrough_s_matrix()
-        q_use = self.q_layers if q_layers is None else q_layers
-        w_use = self.widths_nm if widths_nm is None else widths_nm
-        elements = _stack_elements(self.q_lead, q_use, w_use,self.n_sites,start_site=start_site,)
-        return _compose_elements(elements)
-
-def _modified_q_layers(cache: StackCache, geometry:FibonacciGeometry, mode: str, position: int) -> np.ndarray:
-    defected = apply_defect(mode, geometry, position)
-    q_layers = np.array(cache.q_layers, copy=True)
-    q_layers[position] = q_number(cache.energy_ev, float(defected.potentials_ev[position])).item()
-    return q_layers
-
-def _one_site_block(cache:StackCache, defected, position: int, q_layers: np.ndarray,) -> Tuple[SMatrix,...]:
-    p=position
-    widths = np.array(cache.widths_nm, copy=True)
-    widths[p] = float(defected.widths_nm[p])
-    return(_site_coupling(p,cache.q_lead, q_layers), _site_propagation(p,q_layers, widths[p]))
-
-def _phason_block(cache:StackCache, defected, position:int, q_layers:np.ndarray)->Tuple[SMatrix,...]:
+    def _compose_one_site_defect(cache, geometry, mode, position):
+        ok, reason = validate_defect_position(mode, position, geometry)
+        if not ok:
+            return cache.clean_s_matrix(), False, reason
+        defected = apply_defect(mode, geometry, position)
+        p = position
+        q_p = q_number(cache.energy_ev, float(defected.potentials_ev[p])).item()
+        w_p = float(defected.widths_nm[p])
+        M = cache.suffix_M[p + 1] @ abeles_matrix(q_p, w_p) @ cache.prefix_M[p]
+        return transfer_to_s_matrix(M, cache.q_lead), True, ""
+    
+def _compose_phason_defect(cache, geometry, position):
+    ok, reason = validate_defect_position(cfg.MODE_PHASON, position, geometry)
+    if not ok:
+        return cache.clean_s_matrix(), False, reason
     p = position
-    widths = np.array(cache.widths_nm, copy=True)
-    widths[p] = float(defected.widths_nm[p])
-    widths[p+1] = float(defected.widths_nm[p+1])
-    return(_site_coupling(p,cache.q_lead, q_layers), _site_propagation(p,q_layers,widths[p]), interface_s_matrix(q_layers[p],q_layers[p+1]), _site_propagation(p+1, q_layers, widths[p+1]))
+    defected = apply_phason(geometry, p)
+    q_p = q_number(cache.energy_ev, float(defected.potentials_ev[p])).item()
+    q_p1 = q_number(cache.energy_ev, float(defected.potentials_ev[p + 1])).item()
+    w_p = float(defected.widths_nm[p])
+    w_p1 = float(defected.widths_nm[p + 1])
+    middle = abeles_matrix(q_p1, w_p1) @ abeles_matrix(q_p, w_p)
+    M = cache.suffix_M[p + 2] @ middle @ cache.prefix_M[p]
+    return transfer_to_s_matrix(M, cache.q_lead), True, ""
 
 def _compose_one_site_defect(
     cache: StackCache,
@@ -155,18 +152,10 @@ def _compose_one_site_defect(
         return cache.clean_s_matrix(), False, reason
     defected = apply_defect(mode,geometry, position)
     p = position
-    q_modified = _modified_q_layers(cache, geometry, mode, p)
-    middle = _compose_elements(_one_site_block(cache, defected, p, q_modified))
-
-    s_total = redheffer_star(cache.prefix[p], middle)
-    if p+1<cache.n_sites:
-        s_total = redheffer_star(
-            s_total,
-            cache.suffix(p+1, q_layers= q_modified, widths_nm=defected.widths_nm),
-        )
-    else:
-        s_total = redheffer_star(s_total, interface_s_matrix(q_modified[p], cache.q_lead))
-    return s_total, True, ""
+    q_p = q_number(cache.energy_ev, float(defected.potentials_ev[p])).item()
+    w_p = float(defected.widths_nm[p])
+    M = cache.suffix_M[p + 1] @ abeles_matrix(q_p, w_p) @ cache.prefix_M[p]
+    return transfer_to_s_matrix(M, cache.q_lead), True, ""
 
 def _compose_phason_defect(
     cache: StackCache,
@@ -179,20 +168,13 @@ def _compose_phason_defect(
 
     p=position
     defected = apply_phason(geometry, p)
-    q_modified= np.array(cache.q_layers, copy=True)
-    q_modified[p] = q_number(cache.energy_ev, float(defected.potentials_ev[p])).item()
-    q_modified[p+1] = q_number(cache.energy_ev, float(defected.potentials_ev[p+1])).item()
-
-    middle = _compose_elements(_phason_block(cache, defected, p, q_modified))
-    s_total = redheffer_star(cache.prefix[p], middle)
-    if p+2 < cache.n_sites:
-        s_total = redheffer_star(
-            s_total, cache.suffix(p+2, q_layers=q_modified, widths_nm=defected.widths_nm),
-        )
-    else:
-        s_total = redheffer_star(s_total, interface_s_matrix(q_modified[p+1], cache.q_lead))
-
-    return s_total, True, ""
+    q_p = q_number(cache.energy_ev, float(defected.potentials_ev[p])).item()
+    q_p1 = q_number(cache.energy_ev, float(defected.potentials_ev[p + 1])).item()
+    w_p = float(defected.widths_nm[p])
+    w_p1 = float(defected.widths_nm[p + 1])
+    middle = abeles_matrix(q_p1, w_p1) @ abeles_matrix(q_p, w_p)
+    M = cache.suffix_M[p + 2] @ middle @ cache.prefix_M[p]
+    return transfer_to_s_matrix(M, cache.q_lead), True, ""
 
 def fast_s_matrix(
     mode:str,

@@ -70,10 +70,15 @@ def sweep_generation(
     energies = np.asarray(energies_ev, dtype=np.float64)
     modes = list(modes or cfg.DEFECT_MODES)
 
-    t_clean, log_clean, clean_status = clean_transmission_grid(generation, energies, geometry = geom, v_lead_ev=v_lead_ev)
+    t_clean, log_clean, clean_status = None
     mode_data: Dict[str, Dict[str, np.ndarray]] = {}
     for mode in modes:
-        mode_data[mode] = fast_sweep(mode, energies, geometry = geom, v_lead_ev=v_lead_ev)
+        sweep = fast_sweep(mode, energies, geometry=geom, v_lead_ev=v_lead_ev)
+        mode_data[mode] = sweep
+        if t_clean is None:
+            t_clean = sweep["T_clean"]
+            log_clean = sweep["log_T_clean"]
+            clean_status = np.array(["ok" if np.isfinite(t) else "invalid" for t in t_clean], dtype=object)
     return {
         "generation": generation,
         "energies": energies,
