@@ -157,3 +157,16 @@ def test_produce_parity_analysis_from_saved_raw(tmp_path):
     manifest = produce_parity_analysis(raw_dir, generations=[4], output_dir=tmp_path / "parity_out",)
     assert manifest["files"]
     assert (tmp_path / "parity_out" / "manifest.json").exists()
+
+def test_parity_contrast_respects_cell_valid():
+    t = np.array([[1.0, 1.0], [0.0, 0.0], [1.0, 1.0], [0.0, 0.0]], dtype=np.float64)
+    parity = np.array([0, 1, 0, 1], dtype=np.int8)
+    valid = np.ones(4, dtype=bool)
+    # Drop an even cell at energy 0 so even mean uses only position 2
+    cell = np.ones((4, 2), dtype=bool)
+    cell[0, 0] = False
+    result = parity_contrast(t, parity, valid, cell_valid=cell)
+    assert result.n_even_by_energy[0] == 1
+    assert result.n_even_by_energy[1] == 2
+    assert result.D[0] == pytest.approx(1.0 - 0.0)
+    assert result.coverage < 1.0

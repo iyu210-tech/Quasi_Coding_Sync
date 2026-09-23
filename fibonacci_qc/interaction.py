@@ -144,7 +144,19 @@ def interaction_from_mode_arrays(
     t_width_a = np.asarray(t_width, dtype=np.float64)
 
     cell_ok = np.isfinite(t_sub_a) & np.isfinite(t_pot_a) & np.isfinite(t_width_a) & np.isfinite(t_clean)[np.newaxis, :]
-#continue update from here
+
+    for s in (status_sub, status_pot, status_width):
+        ok = _cell_ok_from_status(s)
+        if ok is not None:
+            cell_ok = cell_ok & ok
+    if status_clean is not None:
+        cell_ok = cell_ok & _broadcast_clean_usable(_status_log_usable(status_clean), t_sub_a.shape[0])
+    delta_sub = t_sub_a - t_clean[np.newaxis, :]
+    delta_pot = t_pot_a - t_clean[np.newaxis, :]
+    delta_width = t_width_a - t_clean[np.newaxis, :]
+    delta_sub = np.where(cell_ok, delta_sub, np.nan)
+    delta_pot = np.where(cell_ok, delta_pot, np.nan)
+    delta_width = np.where(cell_ok, delta_width, np.nan)
     usable = _log_usable_mask(
         log_t_sub=log_t_sub,
         log_t_pot=log_t_pot,
