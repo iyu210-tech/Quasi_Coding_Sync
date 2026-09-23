@@ -199,6 +199,8 @@ def fast_transmission(mode: str, position: int, cache: StackCache, geometry: Fib
         )
     return transmission_from_s(s_mat, cache.q_lead)
 
+from fibonacci_qc.parity_analysis import numerical_cell_mask
+
 def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[FibonacciGeometry] = None,generation: Optional[int]=None, v_lead_ev:float = cfg.V_LEAD_EV) -> dict[str, np.ndarray]:
     geom = _resolve_geometry(geometry, generation)
     energies = np.asarray(energies_ev, dtype =np.float64)
@@ -229,6 +231,8 @@ def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[Fibonacc
             log_arr[p, e_idx] = result.log_T
             status_arr[p, e_idx] = result.status
 
+    cell_ok = numerical_cell_mask(status_arr)
+
     return {
         "mode": np.array(mode), 
         "generation": np.array(geom.generation, dtype=np.int64),
@@ -241,6 +245,7 @@ def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[Fibonacc
         "log_T_clean": log_clean,
         "valid": valid_mask,
         "status": status_arr,
+        "cell_ok": cell_ok
     }
 
 def validate_against_reference(

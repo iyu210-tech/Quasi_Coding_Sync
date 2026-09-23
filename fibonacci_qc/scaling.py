@@ -14,7 +14,7 @@ import numpy as np
 from fibonacci_qc import config as cfg
 from fibonacci_qc.fast_solver import fast_sweep
 from fibonacci_qc.geometry import build_geometry, fibonacci_number
-from fibonacci_qc.parity_analysis import parity_contrast, position_parity,position_valid_mask
+from fibonacci_qc.parity_analysis import parity_contrast, position_parity,position_valid_mask, numerical_cell_mask
 
 DIRECTION_FLAT = "flat"
 DIRECTION_INCREASING = "increasing_contrast"
@@ -255,7 +255,8 @@ def collect_parity_curves(
         sweep = fast_sweep(mode, energies, geometry=geom)
         parity = position_parity(geom, mode)
         valid = position_valid_mask(geom, mode, sweep_valid=np.asarray(sweep["valid"], dtype=bool))
-        d_rows.append(parity_contrast(sweep["T"], parity, valid, energies=energies).D)
+        cell = numerical_cell_mask(sweep["status"] if "status" in sweep else None)
+        d_rows.append(parity_contrast(sweep["T"], parity, valid, energies=energies, cell_valid=cell).D)
     return sizes, np.vstack(d_rows), energies
 
 def collect_parity_curves_from_bundles(

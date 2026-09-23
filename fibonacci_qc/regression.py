@@ -10,7 +10,7 @@ import numpy as np
 from fibonacci_qc import config as cfg
 from fibonacci_qc.fast_solver import fast_sweep
 from fibonacci_qc.geometry import build_geometry
-from fibonacci_qc.parity_analysis import parity_contrast, position_parity, position_valid_mask
+from fibonacci_qc.parity_analysis import parity_contrast, position_parity, position_valid_mask, numerical_cell_mask
 from fibonacci_qc.raw_data import run_metadata
 from fibonacci_qc.scattering import clean_transmission_grid
 
@@ -32,7 +32,7 @@ def compute_regression_reference() -> Dict[str, np.ndarray]:
     t_clean, log_clean, _ = clean_transmission_grid(generation, energies, geometry=geom)
     parity = position_parity(geom, mode)
     valid = position_valid_mask(geom, mode, sweep_valid=sweep["valid"])
-    contrast = parity_contrast(sweep["T"], parity, valid, energies=energies)
+    contrast = parity_contrast(sweep["T"], parity, valid, energies=energies, cell_valid=numerical_cell_mask(sweep["status"]))
     return {
         "generation": np.array(generation, dtype=np.int64),
         "energies": energies,

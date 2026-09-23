@@ -82,6 +82,13 @@ def _broadcast_clean_usable(
         return np.broadcast_to(clean_usable[np.newaxis, :], (n_pos, clean_usable.size)).copy
     return clean_usable
 
+def _cell_ok_from_status(status: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if status is None:
+        return None
+    return np.asarray(status, dtype=object) == "ok"
+
+
+
 def _log_usable_mask(
     *,
     log_t_sub: np.ndarray,
@@ -132,9 +139,12 @@ def interaction_from_mode_arrays(
     t_clean = np.asarray(t_clean, dtype=np.float64)
     log_t_clean = np.asarray(log_t_clean, dtype=np.float64)
     energies = np.asarray(energies, dtype=np.float64)
-    delta_sub = np.asarray(t_sub, dtype=np.float64) - t_clean[np.newaxis, :]
-    delta_pot = np.asarray(t_pot, dtype=np.float64) - t_clean[np.newaxis, :]
-    delta_width = np.asarray(t_width, dtype=np.float64) - t_clean[np.newaxis, :]
+    t_sub_a = np.asarray(t_sub, dtype=np.float64)
+    t_pot_a = np.asarray(t_pot, dtype=np.float64)
+    t_width_a = np.asarray(t_width, dtype=np.float64)
+
+    cell_ok = np.isfinite(t_sub_a) & np.isfinite(t_pot_a) & np.isfinite(t_width_a) & np.isfinite(t_clean)[np.newaxis, :]
+#continue update from here
     usable = _log_usable_mask(
         log_t_sub=log_t_sub,
         log_t_pot=log_t_pot,

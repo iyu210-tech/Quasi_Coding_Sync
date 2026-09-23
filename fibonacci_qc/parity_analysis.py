@@ -413,7 +413,8 @@ def analyze_generation_parity(
         sweep = modes_dict[mode]
         t = np.asarray(sweep["T"], dtype=np.float64)
         sweep_valid = np.asarray(sweep["valid"], dtype=bool)
-        mode_results[mode] = analyze_mode_parity(t, geom, mode, energies=energies, sweep_valid=sweep_valid,)
+        cell_valid = numerical_cell_mask(sweep["status"]) if "status" in sweep else None
+        mode_results[mode] = analyze_mode_parity(t, geom, mode, energies=energies, sweep_valid=sweep_valid, cell_valid=cell_valid)
 
     return {
         "generation": generation,

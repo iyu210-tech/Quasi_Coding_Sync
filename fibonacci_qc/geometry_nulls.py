@@ -8,7 +8,7 @@ import numpy as np
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
-from fibonacci_qc.parity_analysis import (integrate_contrast, parity_contrast, position_parity, position_valid_mask,)
+from fibonacci_qc.parity_analysis import integrate_contrast, parity_contrast, position_parity, position_valid_mask, numerical_cell_mask
 
 @dataclass(frozen=True)
 class GlobalParityStats:
