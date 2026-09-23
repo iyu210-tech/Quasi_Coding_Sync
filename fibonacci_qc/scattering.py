@@ -288,7 +288,6 @@ def transmission_from_s(
     if status == "ok" and log_status != "ok":
         status = log_status
     return TransmissionResult(T=t, log_T=log_t, status=status, S21=s21)
-#continue update w/ delta_log_t in interaction
 
 def stack_transmission(
     widths_nm: np.ndarray,

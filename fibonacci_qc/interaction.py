@@ -26,13 +26,20 @@ class InteractionRemainder:
 def delta_log_t(
     log_t: np.ndarray,
     log_t_clean: np.ndarray,
+    *,
+    usable: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     "Give log(T_m) - log(T_clean), broadcasting on the energy axis."
     log_t = np.asarray(log_t, dtype=np.float64)
     log_t_clean = np.asarray(log_t_clean, dtype=np.float64)
     if log_t.ndim == 1:
-        return log_t - log_t_clean
-    return log_t - log_t_clean[np.newaxis, :]
+        out = log_t - log_t_clean
+    else:
+        out = log_t - log_t_clean[np.newaxis, :]
+    if usable is not None:
+        out = np.where(np.asarray(usable, dtype=bool), out, np.nan)
+    out = np.where(np.isfinite(out), out, np.nan)
+    return out
 
 def interaction_remainder(
     delta_t_sub: np.ndarray,
@@ -50,9 +57,8 @@ def interaction_remainder_log(
     delta_log_t_width: np.ndarray,
 ) -> np.ndarray:
     "I_log = Δlog(T_sub) - Δlog(T_pot) - Δlog(T_width)."
-    return (
-        np.asarray(delta_log_t_sub, dtype=np.float64)-np.asarray(delta_log_t_pot, dtype=np.float64)-np.asarray(delta_log_t_width, dtype=np.float64)
-    )
+    out = np.asarray(delta_log_t_sub, dtype=np.float64)-np.asarray(delta_log_t_pot, dtype=np.float64)-np.asarray(delta_log_t_width, dtype=np.float64)
+    return np.where(np.isfinite(out), out, np.nan)
 
 def _require_mode(
     modes: Mapping[str, Mapping[str, np.ndarray]],
@@ -61,6 +67,48 @@ def _require_mode(
     if mode not in modes:
         raise KeyError(f"mode {mode!r} required for interaction remainder; available: {tuple(modes)}")
     return modes[mode]
+
+def _status_log_usable(status: np.ndarray) -> np.ndarray:
+    "True when log_T is trusted"
+    status = np.asarray(status, dtype=object)
+    return status == "ok"
+
+def _broadcast_clean_usable(
+    clean_usable: np.ndarray,
+    n_pos: int,
+) -> np.ndarray:
+    clean_usable = np.asarray(clean_usable, dtype = bool)
+    if clean_usable.ndim == 1:
+        return np.broadcast_to(clean_usable[np.newaxis, :], (n_pos, clean_usable.size)).copy
+    return clean_usable
+
+def _log_usable_mask(
+    *,
+    log_t_sub: np.ndarray,
+    log_t_pot: np.ndarray,
+    log_t_width: np.ndarray,
+    log_t_clean: np.ndarray,
+    status_sub: Optional[np.ndarray] = None,
+    status_pot: Optional[np.ndarray] = None,
+    status_width: Optional[np.ndarray] = None,
+    status_clean: Optional[np.ndarray] = None,
+ ) -> np.ndarray:
+    "Cell wise mask for logs, prefer status ok when given, or req finite logs"
+    log_t_sub = np.asarray(log_t_sub, dtype=np.float64)
+    log_t_pot = np.asarray(log_t_pot, dtype=np.float64)
+    log_t_width = np.asarray(log_t_width, dtype=np.float64)
+    log_t_clean = np.asarray(log_t_clean, dtype=np.float64)
+    n_pos = log_t_sub.shape[0]
+    usable = np.isfinite(log_t_sub) & np.isfinite(log_t_pot) & np.isfinite(log_t_width) & np.isfinite(log_t_clean)[np.newaxis, :]
+    if status_sub is not None:
+        usable = usable & _status_log_usable(status_sub)
+    if status_pot is not None:
+        usable = usable & _status_log_usable(status_pot)
+    if status_width is not None:
+        usable = usable & _status_log_usable(status_width)
+    if status_clean is not None:
+        usable = usable & _broadcast_clean_usable(_status_log_usable(status_clean), n_pos)
+    return usable
 
 def interaction_from_mode_arrays(
     *,
@@ -75,6 +123,10 @@ def interaction_from_mode_arrays(
     energies: np.ndarray,
     valid: Optional[np.ndarray] = None,
     positions: Optional[np.ndarray] = None,
+    status_sub: Optional[np.ndarray] = None,
+    status_pot: Optional[np.ndarray] = None,
+    status_width: Optional[np.ndarray] = None,
+    status_clean: Optional[np.ndarray] = None,
 ) -> InteractionRemainder:
     "Build interaction remainder from explicit transmission arrays."
     t_clean = np.asarray(t_clean, dtype=np.float64)
@@ -83,6 +135,16 @@ def interaction_from_mode_arrays(
     delta_sub = np.asarray(t_sub, dtype=np.float64) - t_clean[np.newaxis, :]
     delta_pot = np.asarray(t_pot, dtype=np.float64) - t_clean[np.newaxis, :]
     delta_width = np.asarray(t_width, dtype=np.float64) - t_clean[np.newaxis, :]
+    usable = _log_usable_mask(
+        log_t_sub=log_t_sub,
+        log_t_pot=log_t_pot,
+        log_t_width=log_t_width,
+        log_t_clean=log_t_clean,
+        status_sub=status_sub,
+        status_pot=status_pot,
+        status_width=status_width,
+        status_clean=status_clean,
+    )
     dlog_sub = delta_log_t(log_t_sub, log_t_clean)
     dlog_pot = delta_log_t(log_t_pot, log_t_clean)
     dlog_width = delta_log_t(log_t_width, log_t_clean)
@@ -116,12 +178,13 @@ def interaction_from_sweeps(
     t_clean: np.ndarray,
     log_t_clean: np.ndarray,
     energies: np.ndarray,
+    status_clean: Optional[np.ndarray] = None,
 ) -> InteractionRemainder:
     "Build I_p(E) from multi-mode sweep dictionary."
     sub = _require_mode(modes, cfg.MODE_SUBSTITUTION)
     pot = _require_mode(modes, cfg.MODE_POTENTIAL_ONLY)
     width = _require_mode(modes, cfg.MODE_WIDTH_ONLY)
-    valid = (np.asarray(sub["valid"], dtype=bool)&np.asarray(pot["valid"], dtype=bool)&np.asarray(width["valid"], dtype=bool))
+    valid = np.asarray(sub["valid"], dtype=bool)&np.asarray(pot["valid"], dtype=bool)&np.asarray(width["valid"], dtype=bool)
     positions = np.asarray(sub.get("positions", np.arange(valid.size)),dtype=np.int64,)
     return interaction_from_mode_arrays(
         t_sub=sub["T"],
@@ -135,6 +198,10 @@ def interaction_from_sweeps(
         energies=energies,
         valid=valid,
         positions=positions,
+        status_sub=sub.get("status"),
+        status_pot=pot.get("status"),
+        status_width=width.get("status"),
+        status_clean=status_clean,
     )
 
 def interaction_summary(
