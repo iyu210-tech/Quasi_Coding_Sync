@@ -25,6 +25,9 @@ class ParityContrastResult:
     n_odd: int
     parity: np.ndarray
     valid: np.ndarray
+    n_even_by_energy: np.ndarray  # int64, shape (n_energy,)
+    n_odd_by_energy: np.ndarray
+    coverage: float
 
 @dataclass(frozen=True)
 class IntegratedContrast:
@@ -66,7 +69,7 @@ def position_valid_mask(
 ) -> np.ndarray:
     "Mask of positions that may enter parity avgs"
     if mode == cfg.MODE_PHASON:
-        return np.asarray(geometry.phason_valid, dtype=bool)
+        valid = np.asarray(geometry.phason_valid, dtype=bool)
     elif mode in cfg.ONE_SITE_MODES:
         valid = np.ones(geometry.n_sites, dtype=bool)
     else:
@@ -78,6 +81,28 @@ def position_valid_mask(
             raise ValueError(f"Shape mismatch: sweep_valid {sweep_valid.shape} does not match {valid.shape}")
         valid = valid & sweep_valid
     return valid
+
+def numerical_cell_mask(status: np.ndarray) -> np.ndarray:
+    "True if sweep cell status is ok"
+    return np.asarray(status, dtype=object) == "ok"
+
+def combine_analysis_mask(
+    geometric_valid: np.ndarray,
+    cell_valid: Optional[np.ndarray],
+    *,
+    n_energy: int,
+) -> np.ndarray:
+    "Broadcast geometric (n_pos,) validity onto cells & returns bool array w/ shape (n_pos, n_energy)"
+    geo = np.asarray(geometric_valid, dtype=bool)
+    if geo.ndim != 1:
+        raise ValueError("geometric_valid must be 1D (n_pos,)")
+    out = np.broadcast_to(geo[:, np.newaxis], (geo.size, n_energy)).copy()
+    if cell_valid is None:
+        return out
+    cell = np.asarray(cell_valid, dtype=bool)
+    if cell.shape != out.shape:
+        raise ValueError(f"cell_valid shape {cell.shape} does not match {(geo.size, n_energy)}")
+    return out & cell
 
 def parity_group_masks(
     parity:np.ndarray, valid:np.ndarray
@@ -93,38 +118,55 @@ def parity_group_masks(
 
 def _masked_mean_along_positions(
     transmission: np.ndarray, mask: np.ndarray
-) -> np.ndarray:
+) -> Tuple[np.ndarray, np.ndarray]:
     "mean over axis 0 for each energy, ignoring NaNs outside mask"
     t=np.asarray(transmission, dtype=np.float64)
     mask = np.asarray(mask, dtype=bool)
     if t.ndim != 2:
         raise ValueError(f"transmission must be 2D")
-    if t.shape[0] != mask.shape[0]:
-        raise ValueError(f"transmission and mask must have the same number of positions (axis 0)")
-
-    selected = np.where(mask[:, np.newaxis], t, np.nan)
-    with np.errstate(all="ignore"):
-        return np.nanmean(selected, axis=0)
+    if mask.ndim == 1:
+        if mask.shape[0] != t.shape[0]:
+            raise ValueError("mask and transmission position size differ")
+        use = mask[:, np.newaxis] & np.isfinite(t)
+    elif mask.shape == t.shape:
+        use = mask & np.isfinite(t)
+    else:
+        raise ValueError("mask must be (n_pos,) or (n_pos, n_energy)")
+    counts = np.count_nonzero(use, axis=0).astype(np.float64)
+    summed = np.where(use, t, 0.0).sum(axis=0)
+    mean = np.full(t.shape[1], np.nan, dtype=np.float64)
+    good = counts > 0
+    mean[good] = summed[good] / counts[good]
+    return mean, counts
 
 def parity_contrast(
     transmission: np.ndarray,
     parity: np.ndarray,
     valid:np.ndarray,
     *,
-    energies: Optional[np.ndarray]=None,
+    energies=None,
+    cell_valid=None,
 ) -> ParityContrastResult:
     "Compute D(E)=<T>_even - <T>_odd on the position axis that is frozen."
     t = np.asarray(transmission, dtype=np.float64)
     if t.ndim != 2:
         raise ValueError("transmission has to have the shape (n_positions, n_energy)")
 
-    even, odd = parity_group_masks(parity, valid)
-    n_even = int(np.count_nonzero(even))
-    n_odd = int(np.count_nonzero(odd))
+    geo_valid = np.asarray(valid, type=bool)
+    analysis_mask = combine_analysis_mask(geo_valid, cell_valid, n_energy = t.shape[1])
+    parity_arr = np.asarray(parity, dtype=np.int8)
+    n_even = int(np.count_nonzero(even_geo))
+    n_odd = int(np.count_nonzero(odd_geo))
+    even_cell = analysis_mask & (parity_arr[:, np.newaxis]==0)
+    odd_cell = analysis_mask & (parity_arr[:, np.newaxis] == 1)
     if n_even == 0 or n_odd == 0:
         d = np.full(t.shape[1], np.nan, dtype=np.float64)
+        n_even_e = np.zeros(t.shape[1], dtype=np.int64)
+        n_odd_e = np.zeros(t.shape[1], dtype=np.int64)
     else:
-        d = _masked_mean_along_positions(t, even) - _masked_mean_along_positions(t, odd)
+        mean_even, n_even_e = _masked_mean_along_positions(t, even_cell)
+        mean_odd, n_odd_e = _masked_mean_along_positions(t, odd_cell)
+        d = np.where((n_even_e > 0) & (n_odd_e > 0), mean_even - mean_odd, np.nan)
 
     e_out = (
         np.asarray(energies, dtype=np.float64)
@@ -134,13 +176,20 @@ def parity_contrast(
     if e_out.shape[0] != t.shape[1]:
         raise ValueError("energy length has to match transmission energy axis")
 
+    n_geo = int(np.count_nonzero(geo_valid)) * t.shape[1]
+    n_used = int(np.count_nonzero(analysis_mask))
+    coverage = float(n_used / n_geo) if n_geo > 0 else float("nan")
+
     return ParityContrastResult(
         D=d,
         energies=e_out,
         n_even=n_even,
         n_odd=n_odd,
-        parity=np.asarray(parity, dtype=np.int8),
-        valid=np.asarray(valid, dtype=bool),
+        parity=parity_arr,
+        valid=geo_valid,
+        n_even_by_energy=n_even_e,
+        n_odd_by_energy=n_odd_e,
+        coverage=coverage
     )
 
 def integrate_contrast(
@@ -200,6 +249,7 @@ def conditional_parity_contrasts(
     families: Optional[Sequence[str]] = None,
     sweep_valid: Optional[np.ndarray] = None,
     energies: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
 ) -> Dict[str, Dict[str, ParityContrastResult]]:
     "Parity contrasts on motif / stratum labels"
     parity = position_parity(geometry, mode)
@@ -219,6 +269,7 @@ def conditional_parity_contrasts(
                 parity,
                 stratum_valid,
                 energies=energies,
+                cell_valid=cell_valid,
             )
         out[family] = strata
     return out
@@ -299,6 +350,8 @@ def analyze_mode_parity(
     energies: ArrayLike,
     sweep_valid: Optional[np.ndarray] = None,
     families: Optional[Sequence[str]] = None,
+    cell_valid: Optional[np.ndarray] = None,
+    min_coverage: Optional[float] = None
 ) -> Dict[str, object]:
     "Parity analysis for one defect mode in one generation"
     energies_arr = np.asarray(energies, dtype=np.float64)
@@ -306,6 +359,8 @@ def analyze_mode_parity(
     parity = position_parity(geometry, mode)
     valid = position_valid_mask(geometry, mode, sweep_valid=sweep_valid)
     unconditional = parity_contrast(t, parity, valid, energies=energies_arr)
+    if min_coverage is not None and (not np.isfinite(unconditional.coverage) or unconditional.coverage < min_coverage):
+        raise RuntimeError(f"parity coverage {unconditional.coverage} below min_coverage={min_coverage} for mode={mode!r} generation={geometry.generation}")
     conditional = conditional_parity_contrasts(
         t,
         geometry,
@@ -313,8 +368,9 @@ def analyze_mode_parity(
         families=families,
         sweep_valid=sweep_valid,
         energies=energies_arr,
+        cell_valid=cell_valid,
     )
-    checks = parity_checks(t, geometry, mode, sweep_valid=sweep_valid, energies=energies_arr)
+    checks = parity_checks(t, geometry, mode, sweep_valid=sweep_valid, energies=energies_arr, cell_valid=cell_valid)
 
     integrated_unconditional = integrate_contrast_windows(unconditional.D, energies_arr)
     integrated_conditional: Dict[str, Dict[str, Dict[str, IntegratedContrast]]] = {}
@@ -330,12 +386,14 @@ def analyze_mode_parity(
         "energies": energies_arr,
         "parity": parity,
         "valid": valid,
+        "cell_valid": cell_valid,
+        "coverage": unconditional.coverage,
         "unconditional": unconditional,
         "conditional": conditional,
         "integrated": {"unconditional": integrated_unconditional, "conditional": integrated_conditional},
         "checks": checks,
     }
-
+#continue from here with analyze_generation_parity
 def analyze_generation_parity(
     raw_bundle: Dict[str, object],
     geometry: Optional[FibonacciGeometry] = None,
@@ -381,3 +439,7 @@ def integrated_summary(
         }
         summary[mode] = mode_summary
     return summary
+
+def numerical_cell_mask(status: np.ndarray) -> np.ndarray:
+    status = np.asarray(status, dtype=object)
+    return status == "ok"
