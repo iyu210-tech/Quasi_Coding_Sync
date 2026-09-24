@@ -22,6 +22,7 @@ from fibonacci_qc.scattering import (
     transmission_from_s,
     transmission_from_transfer,
     vacuum_passthrough_s_matrix,
+    exterior_unitarity_residuals,
 )
 
 def assert_in_unit_interval(t: float, *, label: str = "T") -> None:
@@ -163,3 +164,21 @@ def test_slab_s_matrix_single_layer():
     result = transmission_from_s(s_mat)
     expected = stack_transmission(np.array([cfg.D_B_NM]), np.array([cfg.V_B_EV]), energy)
     assert result.T == pytest.approx(expected.T, rel=1e-12)
+
+def test_exterior_stack_unitarity_and_reciprocity():
+    geom = build_geometry(5)
+    for energy in (0.3, 1.7, 8.0):
+        s=stack_s_matrix(geom.widths_nm, geom.potentials_ev, float(energy))
+        q0 = q_number(float(energy), cfg.V_LEAD_EV).item()
+        res = exterior_unitarity_residuals(s, q0)
+        assert res["R_plus_T_left"] == pytest.approx(1.0, abs=1e-10)
+        assert res["R_plus_T_right"] == pytest.approx(1.0, abs=1e-10)
+        assert res["reciprocity"] == pytest.approx(0.0, abs=1e-10)
+        assert res["unitarity_frob"] == pytest.approx(0.0, abs=1e-10)
+
+def test_barrier_log_transmission_matches_analytical():
+    energy, v0, d = 1.2, 2.0, 1.5
+    numerical = stack_transmission(np.array([d]), np.array([v0]), energy)
+    analytical = rectangular_barrier_transmission(energy, v0, d)
+    assert numerical.T == pytest.approx(analytical, rel=1e-9, abs=1e-12)
+    assert numerical.log_T == pytest.approx(np.log(analytical), rel=1e-9, abs= 1e-12)

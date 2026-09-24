@@ -227,6 +227,16 @@ def transfer_matrix_stack(
     "Product of Abeles matrices"
     widths = np.asarray(widths_nm, dtype = np.float64)
     pots = np.asarray(potentials_ev, dtype=np.float64)
+    if widths.ndim != 1 or pots.ndim!= 1:
+        raise ValueError("widths_nm and potentials_ev must be 1D")
+    if widths.shape != pots.shape:
+        raise ValueError("widths_nm and potentials_ev must have the same shape")
+    if not np.all(np.isfinite(widths)) or np.any(widths < 0.0):
+        raise ValueError("widths_nm must be finite and nonnegative")
+    if not np.all(np.isfinite(pots)):
+        raise ValueError("potentials_ev must be finite")
+    if not np.isfinite(energy_ev):
+        raise ValueError("energy_ev must be finite")
     m_total = np.eye(2, dtype=np.complex128)
     for width, pot in zip(widths, pots):
         q=q_number(energy_ev, pot).item()
@@ -256,12 +266,34 @@ def safe_log_t(
         return floor, "underflow"
     return log_t, "ok"
 
-def _classify_transmission(t: float) -> TransferStatus:
+def exterior_unitarity_residuals(s_matrix: SMatrix, q_lead: complex) -> dict[str, float]:
+    "For propagating exterior leads (Im q roughly 0)"
+    s= np.asarray(s_matrix, dtype=np.complex128)
+    if abs(np.asarray(q_lead).imag) > 1e-14:
+        return {"applicable": 0.0}
+    r_l = abs(s[0, 0]) ** 2
+    t_l = abs(s[1, 0]) ** 2
+    r_r = abs(s[1, 1]) ** 2
+    t_r = abs(s[0, 1]) ** 2
+    u = s.conj().T @ s
+    return {
+        "applicable": 1.0,
+        "R_plus_T_left": float(r_l + t_l),
+        "R_plus_T_right": float(r_r + t_r),
+        "reciprocity": float(abs(s[0, 1] - s[1, 0])),
+        "unitarity_frob": float(np.linalg.norm(u - np.eye(2))),
+    }
+
+def _classify_transmission(t: float, s_matrix: SMatrix | None = None, q_lead: complex | None = None) -> TransferStatus:
     tol = cfg.TOLERANCES.t_bounds_atol
     if not np.isfinite(t):
         return "invalid"
     if t < -tol or t > 1.0 + tol:
         return "non_unitary"
+    if s_matrix is not None and q_lead is not None and abs(np.asarray(q_lead).imag) <= 1e-14:
+        res = exterior_unitarity_residuals(s_matrix, q_lead)
+        if abs(res["R_plus_T_left"] - 1.0) > 1e-8 or res["unitarity_frob"] > 1e-8:
+            return "non_unitary"
     return "ok"
 
 def transmission_from_s(
@@ -348,6 +380,8 @@ def rectangular_barrier_transmission(
     v_lead_ev: float = cfg.V_LEAD_EV,
 ) -> float:
     "Analytical transmission through a single rectangular barrier"
+    if abs(float(v_lead_ev)) > 0.0:
+        raise ValueError("Defined for vacuum leads only, use stack_transmission")
     e = float(energy_ev)
     v0 = float(barrier_height_ev)
     d = float(width_nm)

@@ -96,11 +96,19 @@ def fit_loglog_scaling(
     "OLS fit of log|D| = intercept - alpha * log N"
     sizes = np.asarray(sizes, dtype=np.float64)
     abs_d = np.asarray(abs_d, dtype=np.float64)
+    if sizes.shape != abs_d.shape:
+        raise ValueError("sizes and abs_d need same shape")
+    if sizes.ndim != 1:
+        raise ValueError("sizes and abs_d must be 1D")
+    if not np.all(np.isfinite(sizes)) or np.any(sizes <= 0.0):
+        raise ValueError("sizes must be finite & positive strictly")
     usable = _usable_mask(abs_d, d_floor=d_floor)
     n_usable = int(np.count_nonzero(usable))
     if n_usable < min_usable:
         return float("nan"), float("nan"), float("nan"), n_usable, False
     x = np.log(sizes[usable])
+    if np.unique(x).size < 2:
+        return float("nan"), float("nan"), float("nan"), n_usable, False
     y = np.log(abs_d[usable])
     if np.allclose(x, x[0]):
         return float("nan"), float("nan"), float("nan"), n_usable, False
