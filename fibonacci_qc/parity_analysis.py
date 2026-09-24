@@ -116,7 +116,7 @@ def combine_analysis_mask(
 def parity_group_masks(
     parity:np.ndarray, valid:np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
-    "Even/odd masks on full position axis"
+    "Even/odd masks on full position axis; clean transmission position independent (D_clean=0). Decrease in parity contrast interpreted w/ generation, conditioning, or something else"
     parity = np.asarray(parity, dtype=np.int8)
     valid = np.asarray(valid, dtype=bool)
     if parity.shape != valid.shape:
@@ -429,7 +429,7 @@ def analyze_mode_parity(
             label: integrate_contrast_windows(result.D, energies_arr)
             for label, result in strata.items()
         }
-        
+
     return {
         "mode": mode,
         "generation": geometry.generation,

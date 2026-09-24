@@ -47,16 +47,14 @@ def interaction_remainder(
     delta_t_width: np.ndarray,
 ) -> np.ndarray:
     "I = ΔT_sub-ΔT_pot-ΔT_width."
-    return (
-        np.asarray(delta_t_sub, dtype=np.float64)-np.asarray(delta_t_pot, dtype=np.float64)-np.asarray(delta_t_width, dtype=np.float64)
-    )
+    return np.asarray(delta_t_sub, dtype=np.float64)-np.asarray(delta_t_pot, dtype=np.float64)-np.asarray(delta_t_width, dtype=np.float64)
 
 def interaction_remainder_log(
     delta_log_t_sub: np.ndarray,
     delta_log_t_pot: np.ndarray,
     delta_log_t_width: np.ndarray,
 ) -> np.ndarray:
-    "I_log = Δlog(T_sub) - Δlog(T_pot) - Δlog(T_width)."
+    "I_log = Δlog(T_sub) - Δlog(T_pot) - Δlog(T_width). Separate multiplicative null diagnose"
     out = np.asarray(delta_log_t_sub, dtype=np.float64)-np.asarray(delta_log_t_pot, dtype=np.float64)-np.asarray(delta_log_t_width, dtype=np.float64)
     return np.where(np.isfinite(out), out, np.nan)
 
@@ -100,7 +98,7 @@ def _log_usable_mask(
     status_width: Optional[np.ndarray] = None,
     status_clean: Optional[np.ndarray] = None,
  ) -> np.ndarray:
-    "Cell wise mask for logs, prefer status ok when given, or req finite logs"
+    "Cell wise mask for logs, prefer status ok when given, or req finite logs, prefer status ok or require finite logs"
     log_t_sub = np.asarray(log_t_sub, dtype=np.float64)
     log_t_pot = np.asarray(log_t_pot, dtype=np.float64)
     log_t_width = np.asarray(log_t_width, dtype=np.float64)
