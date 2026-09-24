@@ -80,6 +80,7 @@ SCALING_MIN_USABLE_GENERATIONS = 3
 SCALING_LOO_ALPHA_TOL = 0.05
 SCALING_RMSE_MAX = 0.5
 
+# "high" = [5,10] eV = [V_B, 2*V_B]. Conclusions should be for finite windows, or have to define separate extension
 ENERGY_WINDOWS: Mapping[str, Tuple[float, float]] = MappingProxyType({
     "full": (E_MIN_EV, E_MAX_EV),
     "low": (0.1,1.0),

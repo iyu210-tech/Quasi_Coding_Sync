@@ -40,6 +40,15 @@ class IntegratedContrast:
     n_energy: int
 
 @dataclass(frozen=True)
+class ResponseMagnitude:
+    "Mean abs / RMS of ∆T over energy window"
+    mean_abs: float
+    rms: float
+    e_min: float
+    e_max: float
+    n_cells: int
+
+@dataclass(frozen=True)
 class ParityCheckResult:
     "Outcome of an origin shift / consistency check"
     name:str
@@ -242,6 +251,46 @@ def integrate_contrast_windows(
         for name, (lo, hi) in windows.items()
     }
 
+def summarize_delta_t(
+    delta_t: np.ndarray,
+    energies: np.ndarray,
+    valid: np.ndarray,
+    *,
+    cell_valid: Optional[np.ndarray] = None,
+    e_min: float,
+    e_max: float,
+) -> ResponseMagnitude:
+    "Overall response magnitude over [e_min, e_max]. For RQ1"
+    dt = np.asarray(delta_t, dtype=np.float64)
+    e=np.asarray(energies, dtype=np.float64)
+    if dt.ndim!= 2:
+        raise ValueError("delta_t must have shape (n_positions, n_energy)")
+    if e.shape[0]!= dt.shape[1]:
+        raise ValueError("energies length has to match delta_t axis")
+    mask = combine_analysis_mask(np.asarray(valid, dtype=bool), cell_valid, n_energy=dt.shape[1])
+    sel = (e>=e_min) & (e<= e_max)
+    if not np.any(sel):
+        return ResponseMagnitude(mean_abs=float("nan"), rms = float("nan"), e_min=float(e_min), e_max = float(e_max), n_cells=0)
+    vals = np.where(mask[:, sel], dt[:, sel], np.nan)
+    flat = vals.ravel()
+    good = np.isfinite(flat)
+    n_cells = int(np.count_nonzero(good))
+    if n_cells == 0:
+        return ResponseMagnitude(mean_abs=float("nan"), rms = float("nan"), e_min=float(e_min), e_max = float(e_max), n_cells=0)
+    x = flat[good]
+    return ResponseMagnitude(mean_abs=float(np.mean(np.abs(x))), rms = float(np.sqrt(np.mean(x**2))), e_min=float(e_min), e_max = float(e_max), n_cells=n_cells)
+
+def summarize_delta_t_windows(
+    delta_t: np.ndarray,
+    energies: np.ndarray,
+    valid: np.ndarray,
+    *,
+    cell_valid: Optional[np.ndarray] = None,
+    windows: Optional[Mapping[str, Tuple[float, float]]] = None,
+) -> Dict[str, ResponseMagnitude]:
+    windows = windows or cfg.ENERGY_WINDOWS
+    return {name: summarize_delta_t(delta_t, energies, valid, cell_valid=cell_valid, e_min=lo, e_max=hi) for name, (lo,hi) in windows.items()}
+
 def conditional_parity_contrasts(
     transmission: np.ndarray,
     geometry: FibonacciGeometry,
@@ -352,7 +401,7 @@ def analyze_mode_parity(
     sweep_valid: Optional[np.ndarray] = None,
     families: Optional[Sequence[str]] = None,
     cell_valid: Optional[np.ndarray] = None,
-    min_coverage: Optional[float] = None
+    min_coverage: Optional[float] = None,
 ) -> Dict[str, object]:
     "Parity analysis for one defect mode in one generation"
     energies_arr = np.asarray(energies, dtype=np.float64)
@@ -380,7 +429,7 @@ def analyze_mode_parity(
             label: integrate_contrast_windows(result.D, energies_arr)
             for label, result in strata.items()
         }
-
+        
     return {
         "mode": mode,
         "generation": geometry.generation,

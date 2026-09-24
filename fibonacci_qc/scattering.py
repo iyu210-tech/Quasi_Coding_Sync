@@ -5,17 +5,19 @@ Layer parameters and stacks from config and geometry respectively
 
 Layers composed with Redheffer star product
 
-For energy E and potential V def complex wave number Q so Q**2=(E-V)/HBAR2_OVER_2M in nm\\ :sup:'-1'
+For energy E and potential V def complex wave number Q so Q**2=(E-V)/HBAR2_OVER_2M in nm
 
-Propagating regions have a real and positive Q, while evanescent regions have Q=i*kappa with kappa>0
-
+Propagating regions have a real and positive Q; below a layer threshold have Q=i*kappa with kappa>0
+This is so slab thickness is not just a phase
 
 Scattering matrix S connects a_left and a_right inputs to outgoing b_left, b_right.
 
 b_left = S11 a_left + S12 a_right
 b_right = S21 a_left + S22 a_right
 
-When entering the quasicrystal from the left vacuum (i.e. a_right = 0), the transmission probability is T=|S21|**2.
+When entering the quasicrystal from the left vacuum (i.e. a_right = 0), the transmission is T=|S21|**2.
+
+Defect modes width_only and potential_only still change evanescenet attenuation when E< V_layer and propagation phase when E> V_layer respectively
 """
 
 from __future__ import annotations
@@ -44,7 +46,14 @@ class TransmissionResult:
         return self.status in {"ok", "underflow"}
 
 def q_number(energy_ev: ArrayLike, potential_ev: ArrayLike) -> np.ndarray:
-    "Return Q with stable E approx. V"
+    """
+    Complex wave num Q(E,V)
+
+    Propagating: Q = sqrt((E-V)*pref)
+    Evanescent: Q = i*sqrt((V-E)*pref)
+    Width enter transport as Q*d (not phase only below a threshold)
+    Potential enter through Q(E,V) so changes phase above threshold
+    """
     e = np.asarray(energy_ev, dtype=np.float64)
     v = np.asarray(potential_ev, dtype = np.float64)
     arg = (e-v) * cfg.KAPPA2_PREFACTOR_PER_EV_NM2
@@ -112,7 +121,8 @@ def layer_s_matrix(
     if width_nm == 0.0:
         return interface_s_matrix(q_left, q_right)
     if _q_near_zero(q_layer) and _q_near_zero(q_left - q_right):
-        # Equal leads, threshold layer Abeles + transfer -> S
+        # Potential jumps change Q so also phase / reflection
+        # Threshold changes kappa * d and not just phase (parameter interventions_)
         return transfer_to_s_matrix(abeles_matrix(q_layer, width_nm), q_left)
     r01 = (q_left - q_layer) / (q_left + q_layer)
     r12 = (q_layer - q_right) / (q_layer + q_right)
@@ -133,7 +143,7 @@ def layer_s_matrix(
     return np.array([[s11,s12],[s21,s22]], dtype = np.complex128)
 
 def interface_s_matrix(q_left: complex, q_right: complex) -> SMatrix:
-    "Zero thickness interface from q_left to q_right"
+    "Zero thickness interface from q_left to q_right. Implements constant mass continuity matching (psi, psi'), potential jumps change Q so also reflection / transmission"
     q_left = _as_complex_scalar(q_left)
     q_right = _as_complex_scalar(q_right)
     if _q_near_zero(q_left) and _q_near_zero(q_right):
@@ -146,10 +156,11 @@ def interface_s_matrix(q_left: complex, q_right: complex) -> SMatrix:
     
 
 def propagation_s_matrix(q: complex, width_nm: float) ->SMatrix:
+    "Free propagation at wave number q (for real q this is pure phase e^{i q d}, for imaginary it is e^{-kappa d} -> not phase only)"
     if width_nm < 0.0:
         raise ValueError("width_nm cannot be negative")
     q = _as_complex_scalar(q)
-    phase = np.exp(1j * q * width_nm)
+    phase = np.exp(1j * q * width_nm) 
     return np.array([[0.0, phase],[phase, 0.0]], dtype = np.complex128)
 
 def transfer_to_s_matrix(transfer:np.ndarray, q_lead: complex) -> SMatrix:
