@@ -152,9 +152,10 @@ def parity_contrast(
     if t.ndim != 2:
         raise ValueError("transmission has to have the shape (n_positions, n_energy)")
 
-    geo_valid = np.asarray(valid, type=bool)
+    geo_valid = np.asarray(valid, dtype=bool)
     analysis_mask = combine_analysis_mask(geo_valid, cell_valid, n_energy = t.shape[1])
     parity_arr = np.asarray(parity, dtype=np.int8)
+    even_geo, odd_geo = parity_group_masks(parity_arr, geo_valid)
     n_even = int(np.count_nonzero(even_geo))
     n_odd = int(np.count_nonzero(odd_geo))
     even_cell = analysis_mask & (parity_arr[:, np.newaxis]==0)
