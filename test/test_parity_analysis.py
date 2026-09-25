@@ -170,3 +170,9 @@ def test_parity_contrast_respects_cell_valid():
     assert result.n_even_by_energy[1] == 2
     assert result.D[0] == pytest.approx(1.0 - 0.0)
     assert result.coverage < 1.0
+
+def test_position_valid_mask_combines_all_false_sweep_valid():
+    geom = build_geometry(5)
+    sweep_valid = np.zeros(geom.n_bonds, dtype=bool)
+    valid = position_valid_mask(geom, cfg.MODE_PHASON, sweep_valid=sweep_valid)
+    assert not np.any(valid)

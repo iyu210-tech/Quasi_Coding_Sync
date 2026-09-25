@@ -66,7 +66,7 @@ def conditioning_families(mode:str) -> Tuple[str, ...]:
     raise ValueError(f"Unknown defect mode {mode!r}")
 
 def position_parity(geometry:FibonacciGeometry, mode:str) -> np.ndarray:
-    "Return uncompact parity array for mode"
+    "Return full uncompact parity array for mode aligned to geom site / bond axis"
     if mode == cfg.MODE_PHASON:
         return np.asarray(geometry.bond_parity)
     if mode in cfg.ONE_SITE_MODES:

@@ -135,3 +135,19 @@ def test_no_bb_and_phason_only_on_ab_ba():
         n_false = int(np.count_nonzero(~geom.phason_valid))
         n_aa = int(np.count_nonzero(geom.bond_pairs == "AA"))
         assert n_false == n_aa
+
+def test_site_5_radius_length_and_labels():
+    assert cfg.SITE_MOTIF_RADIUS["site_5"] == 2
+    assert cfg.SITE_MOTIF_RADIUS["site_3"] == 1
+    geom = build_geometry(5)
+    site_3 = geom.site_labels("site_3")
+    site_5 = geom.site_labels("site_5")
+    assert site_3.shape == (geom.n_sites,)
+    assert site_5.shape == (geom.n_sites,)
+    assert all(len(s) == 2 * 1 + 1 for s in site_3)
+    assert all(len(s) == 2 * 2 + 1 for s in site_5)
+    assert not np.array_equal(site_3, site_5)
+    letters = geom.letters
+    expected_site_5 = np.array([centered_site_window(letters, p, 2) for p in range(geom.n_sites)], dtype=site_5.dtype)
+    np.testing.assert_array_equal(site_5, expected_site_5)
+    np.testing.assert_array_equal(site_5, ["LLABA", "LABAA", "ABAAB", "BAABR", "AABRR"])

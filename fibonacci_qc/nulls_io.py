@@ -42,6 +42,7 @@ def save_nulls_analysis(
     path: PathLike,
     *,
     metadata: Optional[Dict[str, object]] = None,
+    n_replicates: int = cfg.PERMUTATION_REPLICATES,
 ) -> Path:
     "Permutation-null results to .npz + JSON metadata."
     cfg.ensure_output_dirs()
@@ -84,6 +85,9 @@ def save_nulls_analysis(
         "summary": null_summary_table(analysis),
         "modes": json_modes,
         "run_metadata": metadata or {},
+        "primary_stratum_families": list(cfg.GEOMETRY_STRATA),
+        "mc_p_resolution": float(1.0 / (n_replicates + 1)) if n_replicates >= 1 else float("nan"),
+        "pvalue_note": ("Families not in primary_stratum_families are exploratory (mc_p_resolution is 1/(B+1)"),
     }
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
     return out
@@ -185,6 +189,9 @@ def produce_nulls_analysis(
         "generations": list(generations),
         "n_replicates": n_replicates,
         "seed": seed,
+        "primary_stratum_families": list(cfg.GEOMETRY_STRATA),
+        "mc_p_resolution": float(1.0 / (n_replicates + 1)) if n_replicates >= 1 else float("nan"),
+        "pvalue_note": ("Families not in primary_stratum_families are exploratory (mc_p_resolution is 1/(B+1)"),
     }
     for generation in generations:
         gen_dir = raw_root / f"n{generation:02d}"

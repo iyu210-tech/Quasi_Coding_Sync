@@ -33,6 +33,16 @@ class PermutationNullResult:
     D_observed: np.ndarray
     energies: np.ndarray
     seed: int
+    n_valid: int
+    n_even: int
+    n_odd: int
+    parity_overlap: int
+    n_strata: int
+    n_blocked_strata: int
+    n_free_strata: int
+    effective_permutation_freedom: int
+    residual_abs_S_max: float
+    residual_abs_S_int: float
 
 def applicable_strata(mode: str) -> Tuple[str, ...]:
     "Return geometry null strata applicable to a mode"
@@ -42,13 +52,62 @@ def applicable_strata(mode: str) -> Tuple[str, ...]:
         return tuple(s for s in cfg.GEOMETRY_STRATA if s.startswith("site_"))
     raise ValueError(f"unknown defect mode {mode!r}")
 
+PRIMARY_STRATUM_FAMILIES: Tuple[str,...] = cfg.GEOMETRY_STRATA
+def is_primary_stratum(family:str)->bool:
+    return family in PRIMARY_STRATUM_FAMILIES
+
+def monte_carlo_p_resolution(n_replicates:int)->float:
+    "Smallest possible monte carlo p with (1+#)/(B+1)"
+    if n_replicates < 1:
+        return float("nan")
+    return float(1.0 / (n_replicates + 1))
+
+def stratum_permutation_diagnostics(
+    parity: np.ndarray,
+    stratum_labels: np.ndarray,
+    valid: np.ndarray,
+) -> Dict[str, float]:
+    "Overlap counts and effective permuation freedom in strata, with size leq 1 / only 1 parity -> no identifying variation"
+    parity = np.asarray(parity, dtype=np.int8)
+    labels = np.asarray(stratum_labels)
+    valid = np.asarray(valid, dtype=bool)
+    n_valid = int(np.count_nonzero(valid))
+    n_even = int(np.count_nonzero(valid & (parity == 0)))
+    n_odd = int(np.count_nonzero(valid & (parity == 1)))
+    n_strata = 0
+    n_blocked = 0
+    n_free_positions = 0
+    for value in np.unique(labels):
+        mask = valid & (labels == value)
+        idx = np.flatnonzero(mask)
+        if idx.size == 0:
+            continue
+        n_strata += 1
+        n_e = int(np.count_nonzero(parity[idx] == 0))
+        n_o = int(np.count_nonzero(parity[idx] == 1))
+        # blocked (no shuffle variation)
+        if idx.size <= 1 or n_e == 0 or n_o == 0:
+            n_blocked += 1
+        else:
+            n_free_positions += int(idx.size)
+    return {
+        "n_valid": float(n_valid),
+        "n_even": float(n_even),
+        "n_odd": float(n_odd),
+        "parity_overlap": float(1 if (n_even > 0 and n_odd > 0) else 0),
+        "n_strata": float(n_strata),
+        "n_blocked_strata": float(n_blocked),
+        "n_free_strata": float(n_strata - n_blocked),
+        "effective_permutation_freedom": float(n_free_positions),
+    }
+
 def permute_parity_within_strata(
     parity: np.ndarray,
     stratum_labels: np.ndarray,
     valid: np.ndarray,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    "Shuffle parity inside each stratum, preserving parity counts."
+    "Shuffle parity inside each stratum, preserving parity counts. Results sensitive to omitted global structure beyond chosen family"
     parity = np.asarray(parity, dtype=np.int8)
     labels = np.asarray(stratum_labels)
     valid = np.asarray(valid, dtype=bool)
@@ -82,26 +141,23 @@ def global_parity_stats(
     "Compute S_max and S_int for a D(E) curve."
     d = np.asarray(contrast, dtype=np.float64)
     e = np.asarray(energies, dtype=np.float64)
+    sel = (e>=e_min) & (e<=e_max)
     finite = np.isfinite(d)
-    if not np.any(finite):
+    if not np.any(sel & finite):
         return GlobalParityStats(S_max=float("nan"), S_int=float("nan"))
     s_max = float(np.nanmax(np.abs(d)))
     integrated = integrate_contrast(d, e, e_min, e_max)
     return GlobalParityStats(S_max=s_max, S_int=integrated.abs)
 
-def _two_sided_pvalue(observed: float, null_samples: np.ndarray) -> float:
-    "Monte-Carlo p value for two-sided test of observed vs null samples."
+def _upper_tail_pvalue(observed: float, null_samples: np.ndarray) -> float:
+    "Monte Carlo upper tail p for contrast, p=(1+ #{S_null >= S_obs})/(B+1) for S_max and S_int >= 0"
     if not np.isfinite(observed):
         return float("nan")
     samples = np.asarray(null_samples, dtype=np.float64)
     samples = samples[np.isfinite(samples)]
     if samples.size == 0:
         return float("nan")
-    # Compare absolute deviations
-    null_mean = float(np.mean(samples))
-    obs_dev = abs(observed - null_mean)
-    null_dev = np.abs(samples - null_mean)
-    return float((1 + np.count_nonzero(null_dev >= obs_dev - 1e-15)) / (samples.size + 1))
+    return float((1+np.count_nonzero(samples >= observed-1e-15))/(samples.size+1))
 
 def stratified_permutation_null(
     transmission: np.ndarray,
@@ -142,6 +198,7 @@ def stratified_permutation_null(
         stats_b = global_parity_stats(d_b, e_out)
         null_s_max[b] = stats_b.S_max
         null_s_int[b] = stats_b.S_int
+    diag = stratum_permutation_diagnostics(parity, labels, valid)
     centered_max = float(observed.S_max - np.nanmean(null_s_max))
     centered_int = float(observed.S_int - np.nanmean(null_s_int))
     return PermutationNullResult(
@@ -154,11 +211,21 @@ def stratified_permutation_null(
         null_S_int=null_s_int,
         centered_S_max=centered_max,
         centered_S_int=centered_int,
-        p_S_max=_two_sided_pvalue(observed.S_max, null_s_max),
-        p_S_int=_two_sided_pvalue(observed.S_int, null_s_int),
+        p_S_max=_upper_tail_pvalue(observed.S_max, null_s_max),
+        p_S_int=_upper_tail_pvalue(observed.S_int, null_s_int),
         D_observed=observed_contrast.D,
         energies=e_out,
         seed=seed,
+        n_valid = int(diag["n_valid"]),
+        n_even=int(diag["n_even"]),
+        n_odd = int(diag["n_odd"]),
+        parity_overlap=int(diag["parity_overlap"]),
+        n_strata=int(diag["n_strata"]),
+        n_blocked_strata=int(diag["n_blocked_strata"]),
+        n_free_strata=int(diag["n_free_strata"]),
+        effective_permutation_freedom=int(diag["effective_permutation_freedom"]),
+        residual_abs_S_max=float(abs(centered_max)),
+        residual_abs_S_int=float(abs(centered_int)),
     )
 
 def run_geometry_nulls(
@@ -240,6 +307,23 @@ def null_summary_table(
                     "p_S_max": result.p_S_max,
                     "p_S_int": result.p_S_int,
                     "n_replicates": result.n_replicates,
+                    "pvalue_role": ("primary" if is_primary_stratum(family) else "exploratory"),
+                    "mc_p_resolution": monte_carlo_p_resolution(result.n_replicates),
+                    "n_valid": result.n_valid,
+                    "n_even": result.n_even,
+                    "n_odd": result.n_odd,
+                    "parity_overlap": result.parity_overlap,
+                    "n_strata": result.n_strata,
+                    "n_blocked_strata": result.n_blocked_strata,
+                    "n_free_strata": result.n_free_strata,
+                    "effective_permutation_freedom": result.effective_permutation_freedom,
+                    "residual_abs_S_max": result.residual_abs_S_max,
+                    "residual_abs_S_int": result.residual_abs_S_int,
                 }
             )
+    n_family_tests = len(rows)
+    n_stat_tests = 2 * n_family_tests #p_S_max and p_S_int
+    for row in rows:
+        row["n_family_tests"] = n_family_tests
+        row["n_pvalue_tests"] = n_stat_tests
     return rows

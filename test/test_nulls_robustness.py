@@ -73,6 +73,12 @@ def test_global_parity_stats_on_known_curve():
     assert stats.S_max == pytest.approx(2.0)
     assert stats.S_int == pytest.approx(2.0)
 
+def test_global_parity_stats_common_energy_mask():
+    energies = np.array([0.0, 0.5, 1.0, 2.0])
+    contrast = np.array([10.0,1.0,1.0,10.0]) # peaks outside [0.5, 1.0]
+    stats = global_parity_stats(contrast, energies, e_min=0.5, e_max=1.0)
+    assert stats.S_max == pytest.approx(1.0)
+
 def test_stratified_null_uses_fixed_labeling_and_returns_centered_stats():
     geom = build_geometry(5)
     energies = np.linspace(0.5, 3.0, 10)

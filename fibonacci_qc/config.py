@@ -59,7 +59,7 @@ ONE_SITE_MODES: Tuple[str, ...] = (MODE_SUBSTITUTION, MODE_POTENTIAL_ONLY, MODE_
 TWO_SITE_MODES: Tuple[str, ...] = (MODE_PHASON,)
 
 #Motif families
-SITE_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"site_letter": 0, "site_3": 1, "site_5": 1})
+SITE_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"site_letter": 0, "site_3": 1, "site_5": 2})
 
 BOND_MOTIF_RADIUS: Mapping[str, int] = MappingProxyType({"bond_pair": 0, "bond_4": 1, "bond_6": 2})
 

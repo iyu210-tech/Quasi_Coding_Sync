@@ -132,7 +132,7 @@ def reference_sweep(
     only_valid: bool = True,
     v_lead_ev: float = cfg.V_LEAD_EV,
 ) -> Dict[str, np.ndarray]:
-    "Positional x sweep w/ full stack recomputation, returns the arrays"
+    "Positional x sweep w/ full stack recomputation, returns the arrays. Default layout is pos axis, invalid stay as valid=False"
     geom = _resolve_geometry(geometry, generation)
     energies = np.asarray(energies_ev, dtype=np.float64)
     if positions is None:
