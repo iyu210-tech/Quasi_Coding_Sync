@@ -132,7 +132,7 @@ def save_resonance_analysis(
         np_payload[prefix + "valid"] = valid
         np_payload[prefix + "positions"] = positions
         np_payload[prefix + "n_positions"] = np.array(n_pos, dtype=np.int64)
-        json_modes[mode] = {"summary": payload["summary"], "tracks": [_track_to_dict(t) for t in tracks],}
+        json_modes[mode] = {"summary": payload["summary"]}
 
     np.savez_compressed(out, **np_payload)
     meta = {

@@ -72,6 +72,7 @@ def run_analyze_driver(
     "Run parity, resonance, nulls, and scaling analysis on frozen raw data"
     gens = list(generations) if generations is not None else None
     windows = _windows_for_generations(gens) if gens else None
+    from fibonacci_qc.nulls_io import produce_nulls_analysis, produce_robustness_analysis
     results = {
         "parity": produce_parity_analysis(
             raw_dir,
@@ -99,6 +100,11 @@ def run_analyze_driver(
             windows=windows,
             output_dir="scaling",
         ),
+        "robustness": produce_robustness_analysis(
+            generations =gens,
+            modes=modes,
+            output_dir="robustness"
+        )
     }
     summary_path = cfg.OUTPUT_ANALYSIS / "analyze_manifest.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,7 +14,11 @@ from fibonacci_qc.resonance import (detect_peaks, match_peaks_order_preserving, 
 from fibonacci_qc.scattering import clean_transmission_grid
 
 # Finer grid used
-ROBUSTNESS_N_ENERGY = 2 * cfg.N_ENERGY
+ROBUSTNESS_N_ENERGY = 2 * cfg.N_ENERGY -1
+ROBUSTNESS_PASS_MAX_ABS_D = 1e-3
+ROBUSTNESS_PASS_RMSE_D = 1e-3
+ROBUSTNESS_INDETERMINATE_MAX_ABS_D = 1e-2
+ROBUSTNESS_INDETERMINATE_RMSE_D = 1e-2
 
 @dataclass(frozen=True)
 class ContrastRobustness:
@@ -38,6 +42,16 @@ class ResonanceRobustness:
     mean_abs_delta_E_fine: float
     delta_E_summary_diff: float
 
+def classify_contrast_robustness(contrast:ContrastRobustness) -> str:
+    "Return pass, indeterminate, or fail"
+    if not (np.isfinite(contrast.max_abs_D) and np.isfinite(contrast.rmse_D)):
+        return "indeterminate"
+    if contrast.max_abs_D <= ROBUSTNESS_PASS_MAX_ABS_D and contrast.rmse_D <= ROBUSTNESS_PASS_RMSE_D:
+        return "pass"
+    if contrast.max_abs_D <= ROBUSTNESS_INDETERMINATE_MAX_ABS_D and contrast.rmse_D <= ROBUSTNESS_INDETERMINATE_RMSE_D:
+        return "indeterminate"
+    return "fail"
+
 def finer_energy_grid(
     e_min: float = cfg.E_MIN_EV,
     e_max: float = cfg.E_MAX_EV,
@@ -46,12 +60,43 @@ def finer_energy_grid(
     "Inclusive denser linear energy grid"
     return cfg.energy_grid(e_min, e_max, n_points)
 
+def offset_energy_grid(
+    e_min: float = cfg.E_MIN_EV,
+    e_max: float = cfg.E_MAX_EV,
+    n_points: int = cfg.N_ENERGY,
+) -> np.ndarray:
+    if n_points < 2:
+        raise ValueError("n_points must be >= 2")
+    de = (e_max - e_min) / (n_points - 1)
+    half = 0.5 * de
+    # keep values inside [e_min, e_max]
+    return np.linspace(e_min + half, e_max - half, n_points, dtype=np.float64)
+
+def adaptive_energy_grid_near_peaks(
+    baseline_energies: np.ndarray,
+    peak_energies: Sequence[float],
+    *,
+    half_window_ev: float,
+    n_per_window: int = 21,
+) -> np.ndarray:
+    "Local grids around peaks"
+    base = np.asarray(baseline_energies, dtype=np.float64)
+    segments = [base]
+    for e_pk in peak_energies:
+        lo = max(float(base[0]), float(e_pk) - half_window_ev)
+        hi = min(float(base[-1]), float(e_pk) + half_window_ev)
+        if hi <= lo:
+            continue
+        segments.append(np.linspace(lo, hi, n_per_window, dtype=np.float64))
+    merged = np.unique(np.concatenate(segments))
+    return merged
+
 def interpolate_to_grid(
     values: np.ndarray,
     from_energies: np.ndarray,
     to_energies: np.ndarray,
 ) -> np.ndarray:
-    "Linear interpolation of 1D curve onto to_energies"
+    "Linear interpolation of 1D curve onto to_energies; prefer nested 2M-1 comparisons, offset grids as missed-peak checks"
     return np.interp(np.asarray(to_energies, dtype=np.float64), np.asarray(from_energies, dtype=np.float64), np.asarray(values, dtype=np.float64),)
 
 def compare_parity_contrast(
@@ -197,15 +242,7 @@ def robustness_check_mode(
     contrast = compare_parity_contrast(d_base, e_base, d_fine, e_fine)
     n_pos = sweep_base["T"].shape[0]
     if positions is None:
-        # Check a few valid positions
-        valid_idx = np.flatnonzero(valid)
-        if valid_idx.size == 0:
-            pos_list: Tuple[int, ...] = ()
-        else:
-            mid = valid_idx[valid_idx.size // 2]
-            pos_list = tuple(
-                sorted({int(valid_idx[0]), int(mid), int(valid_idx[-1])})
-            )
+        pos_list = tuple(int(p) for p in np.flatnonzero(valid))
     else:
         pos_list = tuple(int(p) for p in positions)
     resonance_rows = []
@@ -236,6 +273,8 @@ def robustness_check_mode(
         "D_fine": d_fine,
         "energies_baseline": e_base,
         "energies_fine": e_fine,
+        "contrast_gate": classify_contrast_robustness(contrast),
+        "workflow": "pre-specified: nested fine grid -> parity D -> all valid resonance positions",
     }
 
 def analyze_generation_robustness(

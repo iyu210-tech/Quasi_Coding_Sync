@@ -10,8 +10,11 @@ from fibonacci_qc import config as cfg
 from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
 from fibonacci_qc.parity_analysis import position_parity, position_valid_mask
 
-DEFAULT_MIN_PROMINENCE = 0.0
-DEFAULT_MIN_DISTANCE = 1
+_BASELINE_DE_EV = (cfg.E_MAX_EV - cfg.E_MIN_EV) / (cfg.N_ENERGY - 1)
+DEFAULT_MAX_MATCH_DELTA_E_EV = 50.0 * _BASELINE_DE_EV
+
+DEFAULT_MIN_PROMINENCE = 1e-4
+DEFAULT_MIN_DISTANCE_EV = _BASELINE_DE_EV
 
 @dataclass(frozen=True)
 class Peak:
@@ -60,12 +63,27 @@ class ResonanceTrack:
     mean_abs_delta_E: float
     rms_delta_E: float
 
+def _refine_peak_energy(values: np.ndarray, energies: np.ndarray, index: int) -> float:
+    if index <= 0 or index >= values.size - 1:
+        return float(energies[index])
+    y0, y1, y2 = float(values[index - 1]), float(values[index]), float(values[index + 1])
+    denom = (y0 - 2.0 * y1 + y2)
+    if abs(denom) < 1e-300 or not np.isfinite(denom):
+        return float(energies[index])
+    delta = 0.5 * (y0 - y2) / denom
+    delta = float(np.clip(delta, -1.0, 1.0))
+    e0, e1, e2 = float(energies[index - 1]), float(energies[index]), float(energies[index + 1])
+    if delta <= 0.0:
+        return e1 + delta * (e1 - e0)
+    return e1 + delta * (e2 - e1)
+
+
 def detect_peaks(
     values: np.ndarray,
     energies: np.ndarray,
     *,
     min_prominence: float = DEFAULT_MIN_PROMINENCE,
-    min_distance: int = DEFAULT_MIN_DISTANCE,
+    min_distance_ev: int = DEFAULT_MIN_DISTANCE_EV,
 ) -> List[Peak]:
     "Detect local maxima with optional filters."
     y = np.asarray(values, dtype=np.float64)
@@ -87,23 +105,20 @@ def detect_peaks(
             candidates.append(
                 Peak(
                     index=i,
-                    energy=float(e[i]),
+                    energy=_refine_peak_energy(y,e,i),
                     height=float(y[i]),
                     prominence=prominence,
                 )
             )
-    if min_distance <= 1 or len(candidates) <= 1:
+    if min_distance_ev <= 0.0 or len(candidates) <= 1:
         return candidates
     #Keep highest within min_distance (in grid index units).
     ordered = sorted(candidates, key=lambda p: p.height, reverse=True)
     kept: List[Peak] = []
     taken = np.zeros(y.size, dtype=bool)
     for peak in ordered:
-        lo = max(0, peak.index - min_distance + 1)
-        hi = min(y.size, peak.index + min_distance)
-        if np.any(taken[lo:hi]):
+        if any(abs(peak.energy - k.energy) < min_distance_ev - 1e-15 for k in kept):
             continue
-        taken[peak.index] = True
         kept.append(peak)
     kept.sort(key=lambda p: p.index)
     return kept
@@ -111,8 +126,10 @@ def detect_peaks(
 def match_peaks_order_preserving(
     clean_peaks: Sequence[Peak],
     defect_peaks: Sequence[Peak],
+    *,
+    max_delta_e: float = DEFAULT_MAX_MATCH_DELTA_E_EV,
 ) -> MatchResult:
-    "Max matches min displacement"
+    "Max matches min displacement among admissible pairs (|E_clean - E_defect| <= max_delta_e)"
     a = list(clean_peaks)
     b = list(defect_peaks)
     m, n = len(a), len(b)
@@ -130,9 +147,10 @@ def match_peaks_order_preserving(
             if j > 0:
                 candidates.append((best[i][j - 1], 1))
             if i > 0 and j > 0:
-                prev_m, prev_c = best[i - 1][j - 1]
                 cost = abs(a[i - 1].energy - b[j - 1].energy)
-                candidates.append(((prev_m + 1, prev_c - cost), 2))
+                if cost <= max_delta_e + 1e-15:
+                    prev_m, prev_c = best[i-1][j-1]
+                    candidates.append((prev_m + 1, prev_c - cost),2)
             chosen_state, chosen_op = max(candidates, key=lambda item: item[0])
             best[i][j] = chosen_state
             choice[i][j] = chosen_op
@@ -173,6 +191,69 @@ def match_peaks_order_preserving(
         unmatched_defect=unmatched_defect,
     )
 
+def chain_peaks_across_generations(
+    peaks_by_generation: Sequence[Sequence[Peak]],
+    generations: Sequence[int],
+    *,
+    max_delta_e: float = DEFAULT_MAX_MATCH_DELTA_E_EV,
+) -> List[Dict[str, object]]:
+    "Order preserving matches chaining peak lists over generations, return one record"
+    if len(peaks_by_generation) != len(generations):
+        raise ValueError("peaks_by_generation and generations length are mismatched")
+    if not peaks_by_generation:
+        return []
+    #identites are each peak in first generation
+    identities: List[Dict[str, object]] = [
+        {
+            "path": [
+                {
+                    "generation": int(generations[0]),
+                    "peak_index": p.index,
+                    "energy": p.energy,
+                }
+            ]
+        }
+        for p in peaks_by_generation[0]
+    ]
+    current = list(peaks_by_generation[0])
+    for g_idx in range(1, len(peaks_by_generation)):
+        nxt = list(peaks_by_generation[g_idx])
+        match = match_peaks_order_preserving(current, nxt, max_delta_e=max_delta_e)
+        forward: Dict[int, Peak] = {}
+        # rebuild w/ energies
+        used_prev = set()
+        new_current: List[Peak] = []
+        new_identities: List[Dict[str, object]] = []
+        # Rematch
+        prev_by_index = {p.index: i for i, p in enumerate(current)}
+        next_by_index = {p.index: j for j, p in enumerate(nxt)}
+        for m in match.matched:
+            if m.clean_index not in prev_by_index or m.defect_index not in next_by_index:
+                continue
+            i = prev_by_index[m.clean_index]
+            j = next_by_index[m.defect_index]
+            if i in used_prev:
+                continue
+            used_prev.add(i)
+            ident = identities[i]
+            ident = {
+                "path": list(ident["path"])
+                + [
+                    {
+                        "generation": int(generations[g_idx]),
+                        "peak_index": nxt[j].index,
+                        "energy": nxt[j].energy,
+                    }
+                ]
+            }
+            new_identities.append(ident)
+            new_current.append(nxt[j])
+        identities = new_identities
+        current = new_current
+        if not current:
+            break
+    return identities
+
 def _shift_stats(matches: Sequence[PeakMatch]) -> Tuple[float, float, float]:
     if not matches:
         return float("nan"), float("nan"), float("nan")
@@ -193,7 +274,9 @@ def track_resonances(
     parity: int,
     valid: bool = True,
     min_prominence: float = DEFAULT_MIN_PROMINENCE,
-    min_distance: int = DEFAULT_MIN_DISTANCE,
+    min_distance_ev: int = DEFAULT_MIN_DISTANCE_EV,
+    max_delta_e: float = DEFAULT_MAX_MATCH_DELTA_E_EV,
+    clean_peaks: Optional[Sequence[Peak]] = None,
 ) -> ResonanceTrack:
     "Detect and match peaks"
     if not valid:
@@ -214,22 +297,26 @@ def track_resonances(
         clean_spectrum,
         energies,
         min_prominence=min_prominence,
-        min_distance=min_distance,
+        min_distance=min_distance_ev,
     )
+    if clean_peaks is None:
+        clean_peaks_list = detect_peaks(clean_spectrum, energies, min_prominence=min_prominence, min_distance_ev=min_distance_ev)
+    else:
+        clean_peaks_list = list(clean_peaks)
     defect_peaks = detect_peaks(
         defect_spectrum,
         energies,
         min_prominence=min_prominence,
-        min_distance=min_distance,
+        min_distance=min_distance_ev,
     )
-    match = match_peaks_order_preserving(clean_peaks, defect_peaks)
+    match = match_peaks_order_preserving(clean_peaks_list, defect_peaks, max_delta_e=max_delta_e)
     mean_d, mean_abs, rms = _shift_stats(match.matched)
     return ResonanceTrack(
         mode=mode,
         position=position,
         parity=parity,
         valid=True,
-        clean_peaks=tuple(clean_peaks),
+        clean_peaks=tuple(clean_peaks_list),
         defect_peaks=tuple(defect_peaks),
         match=match,
         mean_delta_E=mean_d,
@@ -246,7 +333,7 @@ def analyze_mode_resonances(
     *,
     sweep_valid: Optional[np.ndarray] = None,
     min_prominence: float = DEFAULT_MIN_PROMINENCE,
-    min_distance: int = DEFAULT_MIN_DISTANCE,
+    min_distance_ev: int = DEFAULT_MIN_DISTANCE_EV,
 ) -> Dict[str, object]:
     "Track resonance for every position of one mode"
     t = np.asarray(transmission, dtype=np.float64)
@@ -254,6 +341,7 @@ def analyze_mode_resonances(
     energies = np.asarray(energies, dtype=np.float64)
     parity = position_parity(geometry, mode)
     valid = position_valid_mask(geometry, mode, sweep_valid=sweep_valid)
+    clean_peaks = detect_peaks(t_clean, energies, min_prominence=min_prominence, min_distance_ev=min_distance_ev)
     tracks: List[ResonanceTrack] = []
     for p in range(t.shape[0]):
         tracks.append(
@@ -266,13 +354,15 @@ def analyze_mode_resonances(
                 parity=int(parity[p]),
                 valid=bool(valid[p]),
                 min_prominence=min_prominence,
-                min_distance=min_distance,
+                min_distance=min_distance_ev,
+                clean_peaks=clean_peaks,
             )
         )
     return {
         "mode": mode,
         "generation": geometry.generation,
         "energies": energies,
+        "clean_peaks": clean_peaks,
         "tracks": tracks,
         "summary": summarize_resonance_tracks(tracks),
     }
@@ -303,37 +393,58 @@ def summarize_resonance_tracks(
     for parity_value in (0, 1):
         group = [t for t in tracks if t.valid and t.parity == parity_value]
         deltas: List[float] = []
+        per_position_mean_abs: List[float]=[]
         n_matched = 0
         n_unmatched_clean = 0
         n_unmatched_defect = 0
+        n_clean_peaks = 0
+        n_defect_peaks = 0
+        n_positions_with_match = 0
         for track in group:
             n_matched += track.match.n_matched
             n_unmatched_clean += len(track.match.unmatched_clean)
             n_unmatched_defect += len(track.match.unmatched_defect)
+            n_clean_peaks += len(track.clean_peaks)
+            n_defect_peaks += len(track.defect_peaks)
             deltas.extend(m.delta_E for m in track.match.matched)
+            if track.match.n_matched > 0 and np.isfinite(track.mean_abs_delta_E):
+                per_position_mean_abs.append(track.mean_abs_delta_E)
+                n_positions_with_match += 1
+        # avg over all matched pairs
         if deltas:
             arr = np.asarray(deltas, dtype=np.float64)
-            stats = {
-                "n_positions": float(len(group)),
-                "n_matched": float(n_matched),
-                "n_unmatched_clean": float(n_unmatched_clean),
-                "n_unmatched_defect": float(n_unmatched_defect),
+            pooled = {
                 "mean_delta_E": float(np.mean(arr)),
                 "mean_abs_delta_E": float(np.mean(np.abs(arr))),
                 "rms_delta_E": float(np.sqrt(np.mean(arr ** 2))),
             }
         else:
-            stats = {
-                "n_positions": float(len(group)),
-                "n_matched": float(n_matched),
-                "n_unmatched_clean": float(n_unmatched_clean),
-                "n_unmatched_defect": float(n_unmatched_defect),
+            pooled = {
                 "mean_delta_E": float("nan"),
                 "mean_abs_delta_E": float("nan"),
                 "rms_delta_E": float("nan"),
             }
-        by_parity["even" if parity_value == 0 else "odd"] = stats
-
+        if per_position_mean_abs:
+            equal_position_mean_abs_delta_E = float(np.mean(per_position_mean_abs))
+        else:
+            equal_position_mean_abs_delta_E = float("nan")
+        stats = {
+        "n_positions": float(len(group)),
+        "n_matched": float(n_matched),
+        "n_unmatched_clean": float(n_unmatched_clean),
+        "n_unmatched_defect": float(n_unmatched_defect),
+        "match_coverage_peaks": (
+            float(n_matched / n_clean_peaks) if n_clean_peaks > 0 else float("nan")
+        ),
+        "match_coverage_positions": (
+            float(n_positions_with_match / len(group)) if group else float("nan")
+        ),
+        "equal_position_mean_abs_delta_E": equal_position_mean_abs_delta_E,
+        "estimand_pooled_matches": pooled,
+        # keep prior keys as the pooled estimand for back-compat:
+        **pooled,
+    }
+    by_parity["even" if parity_value == 0 else "odd"] = stats
     return {"by_position": by_position, "by_parity": by_parity}
 
 def analyze_generation_resonances(
@@ -342,7 +453,7 @@ def analyze_generation_resonances(
     *,
     modes: Optional[Sequence[str]] = None,
     min_prominence: float = DEFAULT_MIN_PROMINENCE,
-    min_distance: int = DEFAULT_MIN_DISTANCE,
+    min_distance_ev: int = DEFAULT_MIN_DISTANCE_EV,
 ) -> Dict[str, object]:
     "Resonance track for all modes"
     generation = int(raw_bundle["generation"])
@@ -364,7 +475,7 @@ def analyze_generation_resonances(
             mode,
             sweep_valid=np.asarray(sweep["valid"], dtype=bool),
             min_prominence=min_prominence,
-            min_distance=min_distance,
+            min_distance=min_distance_ev,
         )
     return {
         "generation": generation,
