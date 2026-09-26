@@ -37,7 +37,10 @@ class IntegratedContrast:
     rms:float
     e_min:float
     e_max:float
+    e_min_support: float
+    e_max_support: float
     n_energy: int
+    coverage: float
 
 @dataclass(frozen=True)
 class ResponseMagnitude:
@@ -213,8 +216,27 @@ def integrate_contrast(
     e = np.asarray(energies, dtype=np.float64)
     if d.shape != e.shape:
         raise ValueError("contrast and energies must have same shape")
+    if e_max < e_min:
+        raise ValueError("e_max must be >= e_min")
+    def _interp_at(x: float):
+        if x < e[0] or x > e[-1]:
+            return None
+        return float(np.interp(x, e, d))
     sel = (e >= e_min) & (e <= e_max)
-    n_sel = int(np.count_nonzero(sel))
+    e_list = list(e[sel])
+    d_list = list(d[sel])
+    d_lo = _interp_at(float(e_min))
+    if d_lo is not None and np.isfinite(d_lo):
+        if not e_list or e_list[0] > float(e_min) + 1e-15:
+            e_list.insert(0, float(e_min))
+            d_list.insert(0, d_lo)
+    d_hi = _interp_at(float(e_max))
+    if d_hi is not None and np.isfinite(d_hi):
+        if not e_list or e_list[-1] < float(e_max) - 1e-15:
+            e_list.append(float(e_max))
+            d_list.append(d_hi)
+
+    n_sel = len(e_list)
     if n_sel < 2:
         return IntegratedContrast(
             signed=float("nan"),
@@ -222,11 +244,18 @@ def integrate_contrast(
             rms=float("nan"),
             e_min=float(e_min),
             e_max=float(e_max),
+            e_min_support=float("nan"),
+            e_max_support=float("nan"),
             n_energy=n_sel,
+            coverage=0.0
         )
-    e_win = e[sel]
-    d_win = d[sel]
-    width = float(e_win[-1] - e_win[0])
+    e_win = np.asarray(e_list, dtype=np.float64)
+    d_win = np.asarray(d_list, dtype=np.float64)
+    e_min_s = float(e_win[0])
+    e_max_s = float(e_win[-1])
+    width = e_max_s - e_min_s
+    req = float(e_max - e_min)
+    coverage = float(width / req) if req > 0 else float("nan")
     signed = float(_TRAPEZOID(d_win, e_win))
     abs_int = float(_TRAPEZOID(np.abs(d_win), e_win))
     rms = float(np.sqrt(_TRAPEZOID(d_win ** 2, e_win) / width)) if width > 0 else 0.0
@@ -236,7 +265,10 @@ def integrate_contrast(
         rms=rms,
         e_min=float(e_min),
         e_max=float(e_max),
+        e_min_support=e_min_s,
+        e_max_support=e_max_s,
         n_energy=n_sel,
+        coverage=coverage,
     )
 
 def integrate_contrast_windows(

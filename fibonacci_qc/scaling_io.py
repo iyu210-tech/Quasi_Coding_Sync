@@ -41,6 +41,10 @@ def save_scaling_analysis(
     json_windows: Dict[str, object] = {}
     windows: Dict[str, object] = analysis["windows"]
 
+    if "energies" in analysis:
+        np_payload["energies"] = np.asarray(analysis["energies"], dtype=np.float64)
+    if "global_support" in analysis:
+        np_payload["global_support"] = np.asarray(analysis["global_support"], dtype=bool)
     for key, payload in windows.items():
         energies = np.asarray(payload["energies"], dtype=np.float64)
         np_payload[f"{key}__energies"] = energies
@@ -59,6 +63,8 @@ def save_scaling_analysis(
             np_payload[prefix + "loo_alpha"] = fit.loo_alpha
             np_payload[prefix + "sizes"] = np.asarray(fit.sizes, dtype=np.int64)
             np_payload[prefix + "generations"] = np.asarray(fit.generations, dtype=np.int64)
+            if hasattr(fit, "generation_usable"):
+                np_payload[prefix + "generation_usable"] = fit.generation_usable
             mode_meta[mode] = _mode_fit_to_meta(fit)
         paired_meta: Dict[str, object] = {}
         paired: Dict[str, object] = payload["paired"]
@@ -66,6 +72,14 @@ def save_scaling_analysis(
             prefix = f"{key}__pair__{name}__"
             np_payload[prefix + "delta_alpha"] = pair["delta_alpha"]
             np_payload[prefix + "support"] = pair["support"]
+            if "support_stable" in pair:
+                np_payload[prefix + "support_stable"] = pair["support_stable"]
+            if "delta_alpha_stable" in pair:
+                np_payload[prefix + "delta_alpha_stable"] = pair["delta_alpha_stable"]
+            if "support_global" in pair:
+                np_payload[prefix + "support_global"] = pair["support_global"]
+            if "delta_alpha_global" in pair:
+                np_payload[prefix + "delta_alpha_global"] = pair["delta_alpha_global"]
             paired_meta[name] = {
                 "mode_a": pair["mode_a"],
                 "mode_b": pair["mode_b"],
@@ -83,6 +97,8 @@ def save_scaling_analysis(
         "summary": scaling_summary(analysis),
         "windows": json_windows,
         "run_metadata": metadata or {},
+        "has_global_support": "global_support" in analysis,
+        "n_global_support": (int(np.count_nonzero(analysis["global_support"])) if "global_support" in analysis else None),
     }
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
     return out

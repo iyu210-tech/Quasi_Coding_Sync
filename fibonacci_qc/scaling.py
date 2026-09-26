@@ -39,6 +39,7 @@ class ScalingFitPoint:
     stable: bool
     loo_alpha: Tuple[float, ...]
     loo_left_out: Tuple[int, ...]
+    indeterminate: bool
 
 @dataclass(frozen=True)
 class ModeScalingResult:
@@ -57,6 +58,9 @@ class ModeScalingResult:
     stable: np.ndarray
     loo_alpha: np.ndarray
     points: Tuple[ScalingFitPoint, ...]
+    indeterminate: np.ndarray
+    generation_usable: np.ndarray
+    abs_d: np.ndarray
 
 def classify_direction(
     alpha: float,
@@ -132,9 +136,16 @@ def leave_one_out_alphas(
     sizes = np.asarray(sizes, dtype=np.float64)
     abs_d = np.asarray(abs_d, dtype=np.float64)
     gens = tuple(int(g) for g in generations)
+    usable_full = _usable_mask(abs_d, d_floor=d_floor)
     alphas: List[float] = []
     left_out: List[int] = []
+    relevant: List[bool] = []
     for i, gen in enumerate(gens):
+        left_out.append(gen)
+        relevant.append(bool(usable_full[i]))
+        if not usable_full[i]:
+            alphas.append(float("nan"))
+            continue
         mask = np.ones(sizes.size, dtype=bool)
         mask[i] = False
         alpha, _, _, _, support = fit_loglog_scaling(
@@ -144,33 +155,33 @@ def leave_one_out_alphas(
             d_floor=d_floor,
         )
         alphas.append(alpha if support else float("nan"))
-        left_out.append(gen)
-    return tuple(alphas), tuple(left_out)
+    return tuple(alphas), tuple(left_out), tuple(relevant)
 
-def is_stable_fit(
+def assess_fit_stability(
     alpha: float,
     rmse: float,
     loo_alphas: Sequence[float],
+    loo_relevant: Sequence[bool],
     direction: str,
     *,
     loo_tol: float = cfg.SCALING_LOO_ALPHA_TOL,
     rmse_max: float = cfg.SCALING_RMSE_MAX,
 ) -> bool:
-    "Locked stability. RMSE bound plus LOO alpha/direction agreement"
+    "Return (stable, indeterminate). Each LOO deletion must be supported"
     if not np.isfinite(alpha) or not np.isfinite(rmse):
-        return False
-    if rmse > rmse_max:
-        return False
-    if direction == "undefined":
-        return False
-    finite_loo = [a for a in loo_alphas if np.isfinite(a)]
-    if not finite_loo:
-        return False
-    if any(abs(a - alpha) > loo_tol for a in finite_loo):
-        return False
-    if any(classify_direction(a) != direction for a in finite_loo):
-        return False
-    return True
+        return False, False
+    if rmse > rmse_max or direction == "undefined":
+        return False, False
+    relevant_alphas = [a for a, rel in zip(loo_alphas, loo_relevant) if rel]
+    if not relevant_alphas:
+        return False, True
+    if any(not np.isfinite(a) for a in relevant_alphas):
+        return False, True
+    if any(abs(a - alpha) > loo_tol for a in relevant_alphas):
+        return False, False
+    if any(classify_direction(a) != direction for a in relevant_alphas):
+        return False, False
+    return True, False
 
 def fit_scaling_curve(
     sizes: np.ndarray,
@@ -200,14 +211,19 @@ def fit_scaling_curve(
     support = np.zeros(n_e, dtype=bool)
     direction = np.full(n_e, "undefined", dtype=object)
     stable = np.zeros(n_e, dtype=bool)
+    indeterminate = np.zeros(n_e, dtype=bool)
     loo_alpha = np.full((n_e, n_g), np.nan, dtype=np.float64)
+    generation_usable = np.zeros((n_e, n_g), dtype=bool)
     points: List[ScalingFitPoint] = []
     abs_d = np.abs(d_mat)
     for e_idx in range(n_e):
         a, c, r, n_use, ok = fit_loglog_scaling(sizes, abs_d[:, e_idx])
-        loo, left = leave_one_out_alphas(sizes, abs_d[:, e_idx], gens)
+        loo, left, relevant = leave_one_out_alphas(sizes, abs_d[:, e_idx], gens)
         direc = classify_direction(a) if ok else "undefined"
-        stab = is_stable_fit(a, r, loo, direc) if ok else False
+        if ok:
+            stab, indetermin = assess_fit_stability(a,r,loo,relevant, direc)
+        else:
+            stab, indetermin = False, False
 
         alpha[e_idx] = a
         intercept[e_idx] = c
@@ -217,6 +233,9 @@ def fit_scaling_curve(
         direction[e_idx] = direc
         stable[e_idx] = stab
         loo_alpha[e_idx, :] = loo
+        indeterminate[e_idx] = indetermin
+        gen_usable = _usable_mask(abs_d[:, e_idx])
+        generation_usable[e_idx, :] = gen_usable
         points.append(
             ScalingFitPoint(
                 energy=float(energies[e_idx]),
@@ -229,6 +248,7 @@ def fit_scaling_curve(
                 stable=stab,
                 loo_alpha=loo,
                 loo_left_out=left,
+                indeterminate=indetermin
             )
         )
     return ModeScalingResult(
@@ -244,8 +264,11 @@ def fit_scaling_curve(
         support=support,
         direction=direction,
         stable=stable,
+        indeterminate=indeterminate,
         loo_alpha=loo_alpha,
         points=tuple(points),
+        generation_usable=generation_usable,
+        abs_d=abs_d,
     )
 
 def collect_parity_curves(
@@ -285,9 +308,14 @@ def collect_parity_curves_from_bundles(
         e = np.asarray(bundle["energies"], dtype=np.float64)
         if e.shape != energies.shape or not np.allclose(e, energies):
             raise ValueError(f"energy grid mismatch at generation {gen}")
-        if "D" in bundle:
-            rows.append(np.asarray(bundle["D"], dtype=np.float64))
+        if "D_by_mode" in bundle:
+            d_map = bundle["D_by_mode"]
+            if mode not in d_map:
+                raise KeyError(f"D_by_mode missing mode {mode!r} at generation {gen}")
+            rows.append(np.asarray(d_map[mode], dtype=np.float64))
             continue
+        if "D" in bundle:
+            raise ValueError("bundle['D'] not mode specific, use bundle ['D_by_mode'][mode]")
         modes = bundle["modes"]
         sweep = modes[mode]
         geom = build_geometry(gen)
@@ -312,13 +340,54 @@ def paired_alpha_contrast(
     alpha_b: np.ndarray,
     support_a: np.ndarray,
     support_b: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+    stable_a: Optional[np.ndarray] = None,
+    stable_b: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
     "delta(E) = alpha_a(E) - alpha_b(E) on common support"
     support = common_support_mask(support_a, support_b)
     delta = np.full_like(alpha_a, np.nan, dtype=np.float64)
     both = support & np.isfinite(alpha_a) & np.isfinite(alpha_b)
     delta[both] = np.asarray(alpha_a, dtype=np.float64)[both] - np.asarray(alpha_b, dtype=np.float64)[both]
-    return delta, support
+    out: Dict[str, np.ndarray] = {"delta_alpha": delta, "support": support}
+    if stable_a is not None and stable_b is not None:
+        support_stable = common_support_mask(support, stable_a, stable_b)
+        out["support_stable"] = support_stable
+        out["delta_alpha_stable"] = np.where(support_stable, delta, np.nan)
+    return out
+
+def paired_alpha_on_shared_generations(
+    sizes: np.ndarray,
+    abs_d_a: np.ndarray,
+    abs_d_b: np.ndarray,
+    energies: np.ndarray,
+    *,
+    min_usable: int = cfg.SCALING_MIN_USABLE_GENERATIONS,
+    d_floor: float = cfg.SCALING_D_FLOOR,
+) -> Dict[str, np.ndarray]:
+    "delta alpha(E) with both modes refit on generations"
+    sizes = np.asarray(sizes, dtype=np.float64)
+    abs_d_a = np.asarray(abs_d_a, dtype=np.float64)
+    abs_d_b = np.asarray(abs_d_b, dtype=np.float64)
+    energies = np.asarray(energies, dtype=np.float64)
+    n_e = energies.size
+    delta = np.full(n_e, np.nan, dtype=np.float64)
+    support = np.zeros(n_e, dtype=bool)
+    shared_n = np.zeros(n_e, dtype=np.int64)
+    for e_idx in range(n_e):
+        shared = _usable_mask(abs_d_a[:, e_idx], d_floor=d_floor) & _usable_mask(abs_d_b[:, e_idx], d_floor=d_floor)
+        shared_n[e_idx] = int(np.count_nonzero(shared))
+        if shared_n[e_idx] < min_usable:
+            continue
+        a_a, _, _, _, ok_a = fit_loglog_scaling(sizes[shared], abs_d_a[shared, e_idx], min_usable=min_usable, d_floor=d_floor)
+        a_b, _, _, _, ok_b = fit_loglog_scaling(sizes[shared], abs_d_b[shared, e_idx], min_usable=min_usable, d_floor=d_floor)
+        if ok_a and ok_b:
+            delta[e_idx] = a_a - a_b
+            support[e_idx] = True
+    return {
+        "delta_alpha_shared_gens": delta,
+        "support_shared_gens": support,
+        "shared_n_usable": shared_n,
+    }
 
 def analyze_mode_scaling(
     mode: str,
@@ -377,14 +446,24 @@ def analyze_scaling(
         for name, mode_a, mode_b in pairs:
             if mode_a not in mode_fits or mode_b not in mode_fits:
                 continue
-            delta, support = paired_alpha_contrast(mode_fits[mode_a].alpha, mode_fits[mode_b].alpha, mode_fits[mode_a].support, mode_fits[mode_b].support)
+            pair = paired_alpha_contrast(
+                mode_fits[mode_a].alpha,
+                mode_fits[mode_b].alpha,
+                mode_fits[mode_a].support,
+                mode_fits[mode_b].support,
+                mode_fits[mode_a].stable,
+                mode_fits[mode_b].stable,
+            )
             pair_results[name] = {
                 "mode_a": mode_a,
                 "mode_b": mode_b,
-                "delta_alpha": delta,
-                "support": support,
+                "delta_alpha": pair["delta_alpha"],
+                "support": pair["support"],
+                "support_stable": pair["support_stable"],
+                "delta_alpha_stable": pair["delta_alpha_stable"],
             }
-
+            shared = paired_alpha_on_shared_generations(np.asarray(mode_fits[mode_a].sizes, dtype=np.float64), mode_fits[mode_a].abs_d, mode_fits[mode_b].abs_d, mode_fits[mode_a].energies)
+            pair_results[name].update(shared)
         energies_out = next(iter(mode_fits.values())).energies if mode_fits else (
             np.asarray(energies) if energies is not None else cfg.energy_grid()
         )
@@ -395,11 +474,29 @@ def analyze_scaling(
             "paired": pair_results,
             "energies": energies_out,
         }
+    energies_ref = None
+    global_parts: List[np.ndarray] = []
+    for key, payload in by_window.items():
+        e = np.asarray(payload["energies"], dtype=np.float64)
+        if energies_ref is None:
+            energies_ref = e
+        elif e.shape != energies_ref.shape or not np.allclose(e, energies_ref):
+            raise ValueError("energy grids differ across fit windows; cannot form global support")
+        global_parts.append(np.asarray(payload["common_support"], dtype=bool))
+    global_support = common_support_mask(*global_parts) if global_parts else np.array([], dtype=bool)
+    for key, payload in by_window.items():
+        for name, pair in payload["paired"].items():
+            pair["support_global"] = common_support_mask(pair["support"], global_support)
+            delta = np.asarray(pair["delta_alpha"], dtype=np.float64).copy()
+            delta = np.where(pair["support_global"], delta, np.nan)
+            pair["delta_alpha_global"] = delta
     return {
         "windows": by_window,
         "modes": modes,
         "fit_windows": windows,
         "paired_contrasts": pairs,
+        "energies": energies_ref if energies_ref is not None else (np.asarray(energies) if energies is not None else cfg.energy_grid()),
+        "global_support": global_support,
     }
 
 
@@ -413,7 +510,9 @@ def scaling_summary(
         mode_fits: Dict[str, ModeScalingResult] = payload["modes"]
         for mode, fit in mode_fits.items():
             supp = fit.support
-            alphas = fit.alpha[supp]
+            stab = fit.stable
+            alphas_feas = fit.alpha[supp]
+            alphas_stable = fit.alpha[stab]
             rows.append(
                 {
                     "window": key,
@@ -421,13 +520,18 @@ def scaling_summary(
                     "n_support": int(np.count_nonzero(supp)),
                     "support_fraction": float(np.mean(supp)) if supp.size else 0.0,
                     "n_stable": int(np.count_nonzero(fit.stable)),
-                    "median_abs_alpha": float(np.nanmedian(np.abs(alphas)))
-                    if alphas.size
+                    "stable_fraction": float(np.mean(stab)) if stab.size else 0.0,
+                    "median_abs_alpha_feasible": float(np.nanmedian(np.abs(alphas_feas)))
+                    if alphas_feas.size
                     else float("nan"),
-                    "fraction_flat": float(
-                        np.mean(fit.direction[supp] == DIRECTION_FLAT)
-                    )
+                    "median_abs_alpha_stable": float(np.nanmedian(np.abs(alphas_stable)))
+                    if alphas_stable.size
+                    else float("nan"),
+                    "fraction_flat_feasible": float(np.mean(fit.direction[supp] == DIRECTION_FLAT))
                     if np.any(supp)
+                    else float("nan"),
+                    "fraction_flat_stable": float(np.mean(fit.direction[stab] == DIRECTION_FLAT))
+                    if np.any(stab)
                     else float("nan"),
                 }
             )

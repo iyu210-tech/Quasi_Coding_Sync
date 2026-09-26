@@ -140,18 +140,25 @@ def plot_integrated_metrics(
 ) -> object:
     "Grouped bar chart of signed/abs/RMS integrals"
     plt = _plt()
-    fig, ax = plt.subplots(figsize=(7, 4))
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(9, 4), sharey=False)
     x = np.arange(len(labels), dtype=np.float64)
-    width = 0.25
-    ax.bar(x - width, signed, width, label="signed", color="#1f4e79")
-    ax.bar(x, abs_vals, width, label="abs", color="#c45c26")
-    ax.bar(x + width, rms, width, label="rms", color="#2a6f6f")
-    ax.set_xticks(x)
-    ax.set_xticklabels(list(labels), rotation=20, ha="right")
-    ax.set_ylabel("Integrated value")
-    ax.set_title(title)
-    ax.legend(frameon=False)
-    ax.grid(True, axis="y", alpha=0.3)
+    width = 0.35
+    ax0.bar(x - width / 2, signed, width, label="signed", color="#1f4e79")
+    ax0.bar(x + width / 2, abs_vals, width, label="abs", color="#c45c26")
+    ax0.set_xticks(x)
+    ax0.set_xticklabels(list(labels), rotation=20, ha="right")
+    ax0.set_ylabel(r"Integral (eV)")
+    ax0.set_title("Signed / absolute")
+    ax0.legend(frameon=False)
+    ax0.grid(True, axis="y", alpha=0.3)
+    ax1.bar(x, rms, 0.5, label="rms", color="#2a6f6f")
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(list(labels), rotation=20, ha="right")
+    ax1.set_ylabel("RMS (dimensionless)")
+    ax1.set_title("RMS")
+    ax1.grid(True, axis="y", alpha=0.3)
+    fig.suptitle(title)
+    fig.tight_layout()
     if path is not None:
         save_figure(fig, path)
     return fig
@@ -232,6 +239,7 @@ def plot_scaling_exponents(
     alphas: Mapping[str, np.ndarray],
     *,
     support: Optional[np.ndarray] = None,
+    stable: Optional[np.ndarray] = None,
     path: Optional[PathLike] = None,
     title: str = r"Effective exponents $\alpha_{\mathrm{eff}}(E)$",
 ) -> object:
@@ -243,9 +251,15 @@ def plot_scaling_exponents(
     ax.axhline(-cfg.ALPHA_FLAT_THRESHOLD, color="#bbbbbb", lw=0.8, ls="--")
     for mode, alpha in alphas.items():
         y = np.asarray(alpha, dtype=np.float64).copy()
-        if support is not None:
-            y = np.where(support, y, np.nan)
-        ax.plot(energies, y, lw=1.3, label=mode)
+        if support is not None and stable is not None:
+            y_feas = np.where(support, y, np.nan)
+            y_stab = np.where(stable, y, np.nan)
+            ax.plot(energies, y_feas, lw=1.0, ls="--", alpha=0.5, label=f"{mode} feasible")
+            ax.plot(energies, y_stab, lw=1.5, label=f"{mode} stable")
+        elif support is not None:
+            ax.plot(energies, np.where(support, y, np.nan), lw=1.3, label=mode)
+        else:
+            ax.plot(energies, y, lw=1.3, label=mode)
     ax.set_xlabel("Energy (eV)")
     ax.set_ylabel(r"$\alpha_{\mathrm{eff}}$")
     ax.set_title(title)
@@ -314,7 +328,13 @@ def produce_figures(
         key = next(iter(windows))
         payload = windows[key]
         energies = np.asarray(payload["energies"], dtype=np.float64)
-        alphas = {mode_name: fit.alpha for mode_name, fit in payload["modes"].items()}
-        written["scaling"] = str(save_figure(plot_scaling_exponents(energies, alphas, support=payload.get("common_support"), title=f"Scaling exponents ({key})"), out_root / "scaling_exponents.png"))
+        mode_fits = payload["modes"]
+        alphas = {mode_name: fit.alpha for mode_name, fit in mode_fits.items()}
+        support = payload.get("common_support")
+        stables = [fit.stable for fit in mode_fits.values()]
+        stable_common = stables[0].copy()
+        for s in stables[1:]:
+            stable_common &= s
+        written["scaling"] = str(save_figure(plot_scaling_exponents(energies, alphas, support=payload.get("common_support"), stable=stable_common, title=f"Scaling exponents ({key})"), out_root / "scaling_exponents.png"))
 
     return written

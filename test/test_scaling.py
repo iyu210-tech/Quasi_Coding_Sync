@@ -88,7 +88,8 @@ def test_common_support_and_paired_contrast():
     sb = np.array([True, False, True, True])
     common = common_support_mask(sa, sb)
     np.testing.assert_array_equal(common, [True, False, False, True])
-    delta, support = paired_alpha_contrast(a, b, sa, sb)
+    pair = paired_alpha_contrast(a, b, sa, sb)
+    delta, support = pair["delta_alpha"], pair["support"]
     np.testing.assert_array_equal(support, common)
     assert delta[0] == pytest.approx(0.5)
     assert np.isnan(delta[1])
@@ -101,7 +102,7 @@ def test_collect_from_bundles_and_analyze_scaling():
     # Synthetic |D| with alpha = 0.25
     d = 3.0 * sizes[:, None] ** (-0.25) * np.ones((len(gens), energies.size))
     bundles = {
-        g: {"energies": energies, "D": d[i]}
+        g: {"energies": energies, "D_by_mode": {cfg.MODE_SUBSTITUTION: d[i]}}
         for i, g in enumerate(gens)
     }
     sizes_out, d_out, e_out, gens_out = collect_parity_curves_from_bundles(
@@ -126,7 +127,8 @@ def test_collect_from_bundles_and_analyze_scaling():
     assert np.all(fit_sub.support)
     np.testing.assert_allclose(fit_sub.alpha, 0.25, rtol=1e-8)
     np.testing.assert_allclose(fit_width.alpha, 0.10, rtol=1e-8)
-    delta, support = paired_alpha_contrast(fit_sub.alpha, fit_width.alpha, fit_sub.support, fit_width.support)
+    pair = paired_alpha_contrast(fit_sub.alpha, fit_width.alpha, fit_sub.support, fit_width.support)
+    delta, support = pair["delta_alpha"], pair["support"]
     assert np.all(support)
     np.testing.assert_allclose(delta, 0.15, rtol=1e-8)
 
