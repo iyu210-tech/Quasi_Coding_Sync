@@ -69,30 +69,22 @@ def write_regression_fixture() -> Path:
     return npz_path
 
 def load_regression_fixture() -> Dict[str, np.ndarray]:
-    "Load frozen regression fixture create if missing"
+    "Load committed regression fixture"
     npz_path, _ = fixture_paths()
     if not npz_path.exists():
-        write_regression_fixture()
+        raise FileNotFoundError(f"missing committed fixture {npz_path}.")
     with np.load(npz_path, allow_pickle=True) as data:
         return {key: data[key] for key in data.files}
 
-def assert_matches_regression_fixture(
-    *,
-    atol: float = 1e-12,
-    rtol: float = 1e-10,
-) -> Dict[str, object]:
-    "Recompute regression case and compare to frozen fixture"
+def assert_matches_regression_fixture(*, atol: float = 1e-12, rtol: float = 1e-10) -> None:
+    "Recompute regression case and raise unless matches committed"
     fixture = load_regression_fixture()
     current = compute_regression_reference()
-    report = {"ok": True, "fields": {}}
-    for key in ("T_clean", "T", "D"):
+    for key in ("T_clean", "log_T_clean", "T", "D"):
         a = np.asarray(fixture[key], dtype=np.float64)
         b = np.asarray(current[key], dtype=np.float64)
-        match = np.allclose(a, b, atol=atol, rtol=rtol, equal_nan=True)
-        report["fields"][key] = {
-            "match": bool(match),
-            "max_abs": float(np.nanmax(np.abs(a - b))) if a.shape == b.shape else float("inf"),
-        }
-        if not match:
-            report["ok"] = False
-    return report
+        if a.shape != b.shape or not np.allclose(a, b, atol=atol, rtol=rtol, equal_nan=False):
+            gap = float(np.nanmax(np.abs(a - b))) if a.shape == b.shape else float("inf")
+            raise AssertionError(f"regression fixture mismatch for {key}; max_abs={gap}")
+    if not np.array_equal(np.asarray(fixture["valid"]), np.asarray(current["valid"])):
+        raise AssertionError("regression fixture mismatch for valid")

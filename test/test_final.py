@@ -31,7 +31,6 @@ from fibonacci_qc.plotting import (
 from fibonacci_qc.regression import (
     assert_matches_regression_fixture,
     compute_regression_reference,
-    write_regression_fixture,
 )
 
 @pytest.fixture(scope="module")
@@ -142,17 +141,19 @@ def test_main_figures_cli(tiny_raw, tmp_path):
         == 0
     )
 
-def test_regression_fixture_roundtrip():
-    path = write_regression_fixture()
-    assert path.exists()
-    report = assert_matches_regression_fixture()
-    assert report["ok"]
+def test_regression_fixture_matches_committed_reference():
+    assert_matches_regression_fixture()
     ref = compute_regression_reference()
     assert ref["T"].shape[0] == 3
 
 def test_verify_reproducibility_small():
     report = verify_reproducibility(generations=[4], modes=[cfg.MODE_SUBSTITUTION], n_energy=5)
     assert report["matched"]
+    assert report["n_finite"] > 0
+    assert report["logs_matched"]
+    assert report["valid_matched"]
+    assert report["statuses_matched"]
+    assert report["scientific_claim"] is False
     assert Path(report["report_path"]).exists()
 
 def test_pipeline_and_freeze_snapshot(tmp_path, monkeypatch):
@@ -171,15 +172,30 @@ def test_pipeline_and_freeze_snapshot(tmp_path, monkeypatch):
     assert "metadata" in payload
     assert payload["metadata"]["git"]
     assert payload["metadata"]["config"]
+    assert payload["scaling_supported"] is False
+    assert payload["scientific_claim"] is False
     snap = write_freeze_snapshot("unit_test_freeze")
     assert snap.exists()
     data = json.loads(snap.read_text())
     assert data["label"] == "unit_test_freeze"
     assert "config" in data
+    monkeypatch.setattr(
+        "fibonacci_qc.pipeline._git_metadata",
+        lambda: {"commit": "abc", "branch": "main", "dirty": ""},
+    )
     freeze = create_freeze_tag("test-freeze-dry", dry_run=True)
     assert freeze["dry_run"] is True
     assert freeze["created"] is False
     assert Path(freeze["metadata_path"]).exists()
+    assert "dependencies" in json.loads(Path(freeze["metadata_path"]).read_text())
+
+def test_freeze_tag_rejects_dirty_tree(monkeypatch):
+    monkeypatch.setattr(
+        "fibonacci_qc.pipeline._git_metadata",
+        lambda: {"commit": "abc", "branch": "main", "dirty": " M fibonacci_qc/pipeline.py"},
+    )
+    with pytest.raises(RuntimeError, match="dirty"):
+        create_freeze_tag("test-freeze-dirty", dry_run=True)
 
 def test_main_analyze_cli(tiny_raw):
     # Copy fixture data into output/raw

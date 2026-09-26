@@ -269,6 +269,55 @@ def plot_scaling_exponents(
         save_figure(fig, path)
     return fig
 
+def plot_paired_deltas(energies, deltas, *, supports=None, path=None, title=r"Paired $\Delta\alpha(E)$"):
+    plt = _plt()
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.axhline(0.0, color="#888888", lw=0.8)
+    for name, delta in deltas.items():
+        y = np.asarray(delta, dtype=np.float64)
+        support = None if supports is None else supports.get(name)
+        if support is not None:
+            y = np.where(np.asarray(support, dtype=bool), y, np.nan)
+        ax.plot(energies, y, lw=1.3, label=name)
+    ax.set_xlabel("Energy (eV)")
+    ax.set_ylabel(r"$\Delta\alpha$")
+    ax.set_title(title)
+    ax.legend(frameon=False)
+    ax.grid(True, alpha=0.3)
+    if path is not None:
+        save_figure(fig, path)
+    return fig
+
+def _figure_name(stem, *, run_id, generation, mode) -> str:
+    parts = [stem]
+    if run_id:
+        parts.append(str(run_id))
+    if generation is not None:
+        parts.append(f"n{int(generation):02d}")
+    if mode:
+        parts.append(str(mode))
+    return "_".join(parts) + ".png"
+
+def _first_valid_row(sweep) -> Optional[int]:
+    transmission = np.asarray(sweep["T"])
+    valid = np.asarray(sweep.get("valid", np.ones(transmission.shape[0], dtype=bool)), dtype=bool)
+    usable = np.flatnonzero(valid)
+    if usable.size == 0:
+        return None
+    return int(usable[0])
+
+def _iter_null_results(nulls):
+    if hasattr(nulls, "null_S_max"):
+        yield "null", nulls
+        return
+    for key, value in nulls.items():
+        if hasattr(value, "null_S_max"):
+            yield str(key), value
+        elif isinstance(value, dict):
+            for family, result in value.items():
+                if hasattr(result, "null_S_max"):
+                    yield f"{key}_{family}", result
+
 def produce_figures(
     *,
     raw_bundle: Optional[Mapping[str, object]] = None,
@@ -279,6 +328,8 @@ def produce_figures(
     scaling: Optional[Mapping[str, object]] = None,
     output_dir: PathLike = "study",
     mode: str = cfg.MODE_SUBSTITUTION,
+    run_id: Optional[str] = None,
+    generation: Optional[int] = None,
 ) -> Dict[str, str]:
     "Write standard figure set from available analysis products"
     out_root = Path(output_dir)
@@ -286,55 +337,66 @@ def produce_figures(
         out_root = cfg.OUTPUT_FIGURES / out_root
     out_root.mkdir(parents=True, exist_ok=True)
     written: Dict[str, str] = {}
+    if raw_bundle is not None and generation is None and "generation" in raw_bundle:
+        generation = int(raw_bundle["generation"])
     if raw_bundle is not None:
         energies = np.asarray(raw_bundle["energies"], dtype=np.float64)
         t_clean = np.asarray(raw_bundle["T_clean"], dtype=np.float64)
-        written["clean"] = str(save_figure(plot_clean_transmission(energies, t_clean), out_root / "clean_transmission.png"))
-        modes = raw_bundle.get("modes", {})
-        if mode in modes:
-            sweep = modes[mode]
-            t = np.asarray(sweep["T"], dtype=np.float64)
-            positions = np.asarray(sweep.get("positions", np.arange(t.shape[0])), dtype=np.float64)
-            written["heatmap"] = str(save_figure(plot_transmission_heatmap(energies, positions, t), out_root / f"heatmap_{mode}.png"))
-            mid = t.shape[0] // 2
-            written["defect"] = str(save_figure(plot_defect_transmission(energies, t[mid], t_clean=t_clean, title=f"{mode} p={mid}"), out_root / f"defect_{mode}_p{mid}.png"))
-    if parity is not None and "unconditional" in parity:
-        uncond = parity["unconditional"]
-        energies = np.asarray(parity.get("energies", uncond.energies), dtype=np.float64)
-        written["parity"] = str(save_figure(plot_parity_curve(energies, uncond.D), out_root / "parity_contrast.png"))
-        integrated = parity.get("integrated", {}).get("unconditional", {})
-        if integrated:
-            labels = list(integrated.keys())
-            written["integrated"] = str(save_figure(plot_integrated_metrics(labels, [integrated[k].signed for k in labels], [integrated[k].abs for k in labels], [integrated[k].rms for k in labels]), out_root / "integrated_parity.png"))
-
+        written["clean"] = str(save_figure(plot_clean_transmission(energies, t_clean), out_root / _figure_name("clean_transmission", run_id=run_id, generation=generation, mode=None)))
+        for mode_name, sweep in dict(raw_bundle.get("modes", {})).items():
+            transmission = np.asarray(sweep["T"], dtype=np.float64)
+            positions = np.asarray(sweep.get("positions", np.arange(transmission.shape[0])), dtype=np.float64)
+            heat_key = "heatmap" if mode_name == mode else f"heatmap_{mode_name}"
+            written[heat_key] = str(save_figure(plot_transmission_heatmap(energies, positions, transmission), out_root / _figure_name("heatmap", run_id=run_id, generation=generation, mode=mode_name)))
+            row = _first_valid_row(sweep)
+            if row is None:
+                continue
+            defect_key = "defect" if mode_name == mode else f"defect_{mode_name}"
+            written[defect_key] = str(save_figure(plot_defect_transmission(energies, transmission[row], t_clean=t_clean, title=f"{mode_name} p={row}"), out_root / _figure_name("defect", run_id=run_id, generation=generation, mode=f"{mode_name}_p{row}")))
+    if parity is not None:
+        mode_payloads = parity["modes"] if isinstance(parity, dict) and "modes" in parity else {mode: parity}
+        for mode_name, payload in mode_payloads.items():
+            if isinstance(payload, dict) and "unconditional_D" in payload:
+                curve = np.asarray(payload["unconditional_D"], dtype=np.float64)
+                curve_energies = np.asarray(payload.get("energies", parity.get("energies")), dtype=np.float64)
+            elif isinstance(payload, dict) and "unconditional" in payload:
+                curve = payload["unconditional"].D
+                curve_energies = np.asarray(payload.get("energies"), dtype=np.float64)
+            else:
+                continue
+            written[f"parity_{mode_name}"] = str(save_figure(plot_parity_curve(curve_energies, curve), out_root / _figure_name("parity_contrast", run_id=run_id, generation=generation, mode=mode_name)))
     if interaction is not None:
-        rem = interaction
-        if hasattr(rem, "I"):
-            written["interaction"] = str(save_figure(plot_interaction_remainder(rem.energies, rem.positions, rem.I), out_root / "interaction_remainder.png"))
-
-    if resonance is not None and "summary" in resonance:
+        arrays = interaction["arrays"] if isinstance(interaction, dict) and "arrays" in interaction else None
+        remainder = energies = positions = None
+        if arrays is not None and "I" in arrays:
+            remainder, energies, positions = arrays["I"], arrays["energies"], arrays["positions"]
+        elif hasattr(interaction, "I"):
+            remainder, energies, positions = interaction.I, interaction.energies, interaction.positions
+        if remainder is not None:
+            written["interaction"] = str(save_figure(plot_interaction_remainder(energies, positions, remainder), out_root / _figure_name("interaction_remainder", run_id=run_id, generation=generation, mode=None)))
+    if resonance is not None and isinstance(resonance, dict) and "summary" in resonance:
         by_pos = resonance["summary"]["by_position"]
         positions = np.array([row["position"] for row in by_pos], dtype=np.float64)
         shifts = np.array([row["mean_abs_delta_E"] for row in by_pos], dtype=np.float64)
-        written["resonance"] = str(save_figure(plot_resonance_shifts(positions, shifts), out_root / "resonance_shifts.png"))
-
-    if nulls is not None:
-        first = next(iter(nulls.values())) if isinstance(nulls, dict) else nulls
-        if hasattr(first, "null_S_max"):
-            written["nulls"] = str(save_figure(plot_null_histogram(first.null_S_max, first.observed.S_max, title="Permutation null for S_max", xlabel=r"$S_{\max}$"), out_root / "null_S_max.png"))
-
+        written["resonance"] = str(save_figure(plot_resonance_shifts(positions, shifts), out_root / _figure_name("resonance_shifts", run_id=run_id, generation=generation, mode=mode)))
+    if nulls:
+        for label, result in _iter_null_results(nulls):
+            written[f"nulls_{label}"] = str(save_figure(plot_null_histogram(result.null_S_max, result.observed.S_max, title=f"Permutation null for S_max ({label})", xlabel=r"$S_{\max}$"), out_root / _figure_name("null_S_max", run_id=run_id, generation=generation, mode=label)))
     if scaling is not None and "windows" in scaling:
-        windows = scaling["windows"]
-        key = next(iter(windows))
-        payload = windows[key]
-        energies = np.asarray(payload["energies"], dtype=np.float64)
-        mode_fits = payload["modes"]
-        alphas = {mode_name: fit.alpha for mode_name, fit in mode_fits.items()}
-        support = payload.get("common_support")
-        stables = [fit.stable for fit in mode_fits.values()]
-        stable_common = stables[0].copy()
-        for s in stables[1:]:
-            stable_common &= s
-        written["scaling"] = str(save_figure(plot_scaling_exponents(energies, alphas, support=payload.get("common_support"), stable=stable_common, title=f"Scaling exponents ({key})"), out_root / "scaling_exponents.png"))
-
+        for key, payload in scaling["windows"].items():
+            energies = np.asarray(payload["energies"], dtype=np.float64)
+            mode_fits = payload["modes"]
+            alphas = {mode_name: fit.alpha for mode_name, fit in mode_fits.items()}
+            stables = [np.asarray(fit.stable, dtype=bool) for fit in mode_fits.values() if getattr(fit, "stable", None) is not None]
+            stable_common = None
+            if stables:
+                stable_common = stables[0].copy()
+                for item in stables[1:]:
+                    stable_common &= item
+            written[f"scaling_{key}"] = str(save_figure(plot_scaling_exponents(energies, alphas, support=payload.get("common_support"), stable=stable_common, title=f"Scaling exponents ({key})"), out_root / _figure_name("scaling_exponents", run_id=run_id, generation=None, mode=key)))
+            paired = payload.get("paired") or {}
+            deltas = {name: pair["delta_alpha"] for name, pair in paired.items()}
+            if deltas:
+                supports = {name: pair.get("support") for name, pair in paired.items()}
+                written[f"paired_{key}"] = str(save_figure(plot_paired_deltas(energies, deltas, supports=supports, title=f"Paired delta alpha ({key})"), out_root / _figure_name("paired_delta_alpha", run_id=run_id, generation=None, mode=key)))
     return written

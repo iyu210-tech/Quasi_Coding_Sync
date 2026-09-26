@@ -68,8 +68,8 @@ def _require_mode(
 
 def _status_log_usable(status: np.ndarray) -> np.ndarray:
     "True when log_T is trusted"
-    status = np.asarray(status, dtype=object)
-    return status == "ok"
+    from fibonacci_qc.scattering import status_is_ok
+    return status_is_ok(status)
 
 def _broadcast_clean_usable(
     clean_usable: np.ndarray,
@@ -83,9 +83,8 @@ def _broadcast_clean_usable(
 def _cell_ok_from_status(status: Optional[np.ndarray]) -> Optional[np.ndarray]:
     if status is None:
         return None
-    return np.asarray(status, dtype=object) == "ok"
-
-
+    from fibonacci_qc.scattering import status_is_ok
+    return status_is_ok(status)
 
 def _log_usable_mask(
     *,

@@ -1,8 +1,10 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
-
 import numpy as np
+from types import MappingProxyType
+
 from fibonacci_qc import config as cfg
 
 def fibonacci_number(n:int) -> int:
@@ -121,6 +123,11 @@ def _motif_array(letters: np.ndarray, n_positions:int, radius: int, kind: str) -
             out[p] = bond_window(letters, p, radius)
     return out
 
+def _readonly(array: np.ndarray) -> np.ndarray:
+    owned = np.array(array, copy=True)
+    owned.setflags(write=False)
+    return owned
+
 @dataclass(frozen=True)
 class FibonacciGeometry:
     """Fib stack at one generation, with geometry labels
@@ -142,6 +149,30 @@ class FibonacciGeometry:
     bond_pairs: np.ndarray
     phason_valid: np.ndarray
     bond_motifs: Dict[str, np.ndarray]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "letters",
+            "widths_nm",
+            "potentials_ev",
+            "site_index",
+            "site_parity",
+            "bond_index",
+            "bond_parity",
+            "bond_pairs",
+            "phason_valid",
+        ):
+            object.__setattr__(self, name, _readonly(getattr(self, name)))
+        object.__setattr__(
+            self,
+            "site_motifs",
+            MappingProxyType({key: _readonly(value) for key, value in self.site_motifs.items()}),
+        )
+        object.__setattr__(
+            self,
+            "bond_motifs",
+            MappingProxyType({key: _readonly(value) for key, value in self.bond_motifs.items()}),
+        )
 
     @property
     def n_sites(self) -> int:

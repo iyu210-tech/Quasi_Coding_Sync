@@ -7,12 +7,14 @@ import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union, Tuple
 import numpy as np
+import hashlib
+import sys
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.drivers import run_analyze_driver, run_figures_driver, run_raw_driver
-from fibonacci_qc.raw_data import _git_metadata, load_generation_raw, run_metadata
+from fibonacci_qc.raw_data import _git_metadata, load_generation_raw, run_metadata, config_sha256
 
 PathLike = Union[str, Path]
 
@@ -34,37 +36,78 @@ def run_pipeline(
     *,
     generations: Optional[Sequence[int]] = None,
     modes: Optional[Sequence[str]] = None,
-    n_energy: int = 12,
-    n_replicates: int = 12,
-    raw_dir: str = "pipeline",
-    figure_dir: str = "pipeline",
-    clear_outputs: bool = True,
+    n_energy: Optional[int] = None,
+    n_replicates: Optional[int] = None,
+    raw_dir: Optional[str] = None,
+    figure_dir: Optional[str] = None,
+    clear_outputs: bool = False,
+    profile: str = "smoke",
     validate: bool = True,
 ) -> Dict[str, object]:
-    "Rerun raw -> analyze -> figures from an empty output dir"
+    if profile == "production":
+        gens = list(generations or cfg.GENERATIONS)
+        mode_list = list(modes or cfg.DEFECT_MODES)
+        n_energy_use = cfg.N_ENERGY if n_energy is None else n_energy
+        n_replicates_use = cfg.PERMUTATION_REPLICATES if n_replicates is None else n_replicates
+    elif profile == "smoke":
+        gens = list(generations or [4, 5, 6, 7])
+        mode_list = list(modes or [cfg.MODE_SUBSTITUTION, cfg.MODE_WIDTH_ONLY])
+        n_energy_use = 12 if n_energy is None else n_energy
+        n_replicates_use = 12 if n_replicates is None else n_replicates
+    else:
+        raise ValueError(f"unknown profile {profile!r}")
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    raw_name = raw_dir or f"{profile}_{stamp}"
+    figure_name = figure_dir or raw_name
     if clear_outputs:
-        clear_output_tree()
-    gens = list(generations or [4, 5, 6, 7])
-    mode_list = list(modes or [cfg.MODE_SUBSTITUTION, cfg.MODE_WIDTH_ONLY])
-    raw_manifest = run_raw_driver(generations=gens, modes=mode_list, n_energy=n_energy, output_dir=raw_dir, validate=validate)
-    analyze_manifest = run_analyze_driver(raw_dir=raw_dir, generations=gens, modes=mode_list, n_replicates=n_replicates)
-    figures_manifest = run_figures_driver(raw_dir=raw_dir, generation=gens[0], mode=mode_list[0], output_dir=figure_dir, n_replicates=n_replicates)
+        for root, name in ((cfg.OUTPUT_RAW, raw_name), (cfg.OUTPUT_FIGURES, figure_name)):
+            path = Path(name) if Path(name).is_absolute() else root / name
+            if path.exists():
+                shutil.rmtree(path)
+
+    raw_manifest = run_raw_driver(generations=gens, modes=mode_list, n_energy=n_energy_use, output_dir=raw_name, validate=validate)
+    analyze_manifest = run_analyze_driver(raw_dir=raw_name, generations=gens, modes=mode_list, n_replicates=n_replicates_use)
+    figures_manifest = run_figures_driver(raw_dir=raw_name, generation=gens[0], mode=mode_list[0], output_dir=figure_name, n_replicates=None)
+    rows = analyze_manifest["scaling"].get("summary") or []
+    scaling_supported = any(int(row.get("n_support", 0)) > 0 for row in rows)
+    if profile == "production" and not scaling_supported:
+        raise RuntimeError("production profile produced no supported scaling fit")
     payload = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
+        "profile": profile,
+        "scientific_claim": profile == "production" and scaling_supported,
+        "scaling_supported": scaling_supported,
         "generations": gens,
         "modes": mode_list,
-        "n_energy": n_energy,
-        "n_replicates": n_replicates,
-        "metadata": run_metadata(generations=gens, energies=cfg.energy_grid(n_points=n_energy), extra={"driver": "pipeline"}),
-        "raw": {"manifest_path": raw_manifest.get("manifest_path"), "files": raw_manifest.get("files")},
+        "n_energy": n_energy_use,
+        "n_replicates": n_replicates_use,
+        "raw_dir": raw_name,
+        "metadata": run_metadata(generations=gens, energies=cfg.energy_grid(n_points=n_energy_use), extra={"driver": "pipeline", "profile": profile}),
+        "raw": {"manifest_path": raw_manifest.get("manifest_path"), "files": raw_manifest.get("files"), "peak_rss_bytes": raw_manifest.get("peak_rss_bytes")},
         "analyze": {"manifest_path": analyze_manifest.get("analyze_manifest_path")},
         "figures": figures_manifest,
     }
-    out = cfg.OUTPUT_METADATA / "pipeline_manifest.json"
+    rows = analyze_manifest["scaling"].get("summary") or []
+    scaling_supported = any(int(row.get("n_support", 0)) > 0 for row in rows)
+    payload["scaling_supported"] = scaling_supported
+    payload["scientific_claim"] = scaling_supported
+    out = cfg.OUTPUT_METADATA / f"pipeline_{profile}_{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     payload["pipeline_manifest_path"] = str(out)
     return payload
+
+def _finite_match(left: np.ndarray, right: np.ndarray, *, atol: float, rtol: float):
+    a = np.asarray(left, dtype=np.float64)
+    b = np.asarray(right, dtype=np.float64)
+    if a.shape != b.shape or not np.array_equal(np.isfinite(a), np.isfinite(b)):
+        return False, 0
+    finite = np.isfinite(a)
+    n_finite = int(np.count_nonzero(finite))
+    if n_finite == 0:
+        return False, 0
+    return bool(np.allclose(a[finite], b[finite], atol=atol, rtol=rtol)), n_finite
 
 def verify_reproducibility(
     *,
@@ -89,25 +132,37 @@ def verify_reproducibility(
     run_raw_driver(generations=gens, modes=mode_list, n_energy=n_energy, output_dir=dir_a, validate=False)
     run_raw_driver(generations=gens, modes=mode_list, n_energy=n_energy, output_dir=dir_b, validate=False)
     mismatches = []
+    n_finite = 0
+    logs_matched = True
+    valid_matched = True
+    statuses_matched = True
     for gen in gens:
         for mode in mode_list:
             path_a = cfg.OUTPUT_RAW / dir_a / f"n{gen:02d}" / f"{mode}.npz"
             path_b = cfg.OUTPUT_RAW / dir_b / f"n{gen:02d}" / f"{mode}.npz"
             a = load_generation_raw(path_a)
             b = load_generation_raw(path_b)
-            ta = np.asarray(a["modes"][mode]["T"], dtype=np.float64)
-            tb = np.asarray(b["modes"][mode]["T"], dtype=np.float64)
-            if not np.allclose(ta, tb, atol=atol, rtol=rtol, equal_nan=True):
-                mismatches.append(
-                    {
-                        "generation": gen,
-                        "mode": mode,
-                        "max_abs": float(np.nanmax(np.abs(ta - tb))),
-                    }
-                )
+            sweep_a = a["modes"][mode]
+            sweep_b = b["modes"][mode]
+            ok_t, n_here = _finite_match(sweep_a["T"], sweep_b["T"], atol=atol, rtol=rtol)
+            ok_log, _ = _finite_match(sweep_a["log_T"], sweep_b["log_T"], atol=atol, rtol=rtol)
+            ok_clean, _ = _finite_match(a["T_clean"], b["T_clean"], atol=atol, rtol=rtol)
+            ok_valid = np.array_equal(np.asarray(sweep_a["valid"]), np.asarray(sweep_b["valid"]))
+            ok_status = np.array_equal(np.asarray(sweep_a["status"]), np.asarray(sweep_b["status"]))
+            n_finite += n_here
+            logs_matched = logs_matched and ok_log
+            valid_matched = valid_matched and ok_valid
+            statuses_matched = statuses_matched and ok_status
+            if not (ok_t and ok_log and ok_clean and ok_valid and ok_status):
+                mismatches.append({"generation": gen, "mode": mode, "n_finite": n_here})
     report = {
-        "matched": len(mismatches) == 0,
+        "matched": len(mismatches) == 0 and n_finite > 0 and logs_matched and valid_matched and statuses_matched,
         "mismatches": mismatches,
+        "n_finite": n_finite,
+        "logs_matched": logs_matched,
+        "valid_matched": valid_matched,
+        "statuses_matched": statuses_matched,
+        "scientific_claim": False,
         "metadata": run_metadata(
             generations=gens,
             energies=cfg.energy_grid(n_points=n_energy),
@@ -119,6 +174,25 @@ def verify_reproducibility(
     report["report_path"] = str(out)
     return report
 
+def _package_version(name: str) -> str:
+    try:
+        from importlib.metadata import version
+        return version(name)
+    except Exception:
+        return "missing"
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+def _data_identity() -> Dict[str, str]:
+    identities = {}
+    if cfg.OUTPUT_RAW.exists():
+        for manifest in sorted(cfg.OUTPUT_RAW.glob("*/manifest.json")):
+            identities[str(manifest.relative_to(cfg.PROJECT_ROOT))] = _file_sha256(manifest)
+    return identities
+
 def create_freeze_tag(
     tag: str,
     *,
@@ -127,37 +201,42 @@ def create_freeze_tag(
 ) -> Dict[str, object]:
     "Create an annotated Git tag for the research freeze, write a freeze metadata JSON under output/metadata/"
     git = _git_metadata()
+    dirty = str(git.get("dirty", "")).strip()
+    if dirty:
+        raise RuntimeError(f"refusing freeze tag on a dirty working tree:\n{dirty}")
+    if git.get("commit") in (None, "", "unknown"):
+        raise RuntimeError("refusing freeze tag without a resolved commit")
+    created = False
+    error = None
+    tag_message = message or f"Research freeze {tag}"
+    if not dry_run:
+        try:
+            subprocess.check_call(["git", "tag", "-a", tag, "-m", tag_message], cwd=cfg.PROJECT_ROOT)
+            created = True
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            created = False
+            error = str(exc)
     payload = {
         "tag": tag,
-        "message": message or f"Research freeze {tag}",
+        "message": tag_message,
         "created_utc": datetime.now(timezone.utc).isoformat(),
+        "created": created,
+        "dry_run": dry_run,
+        "error": error,
         "git": git,
         "config": cfg.CONFIG.as_dict(),
-        "dry_run": dry_run,
+        "config_sha256": config_sha256(),
+        "python": sys.version,
+        "dependencies": {
+            "numpy": _package_version("numpy"),
+            "matplotlib": _package_version("matplotlib"),
+        },
+        "data_identity": _data_identity(),
     }
     out = cfg.OUTPUT_METADATA / f"freeze_{tag.replace('/', '_')}.json"
     cfg.ensure_output_dirs()
     out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     payload["metadata_path"] = str(out)
-    if dry_run:
-        payload["created"] = False
-        return payload
-    try:
-        subprocess.check_call(
-            [
-                "git",
-                "tag",
-                "-a",
-                tag,
-                "-m",
-                payload["message"],
-            ],
-            cwd=cfg.PROJECT_ROOT,
-        )
-        payload["created"] = True
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        payload["created"] = False
-        payload["error"] = str(exc)
     return payload
 
 def write_freeze_snapshot(

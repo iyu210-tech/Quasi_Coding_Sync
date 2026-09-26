@@ -10,7 +10,7 @@ import numpy as np
 from fibonacci_qc import config as cfg
 from fibonacci_qc.geometry import build_geometry
 from fibonacci_qc.parity_analysis import(IntegratedContrast, ParityCheckResult, ParityContrastResult, analyze_generation_parity,)
-from fibonacci_qc.raw_data import load_generation_raw
+from fibonacci_qc.raw_data import load_generation_raw, validate_bundle_config, load_generation_bundle
 
 PathLike = Union[str, Path]
 
@@ -139,6 +139,7 @@ def analyze_raw_file(
 ) -> Dict[str, object]:
     "Load raw generation file, run parity analysis, optional save"
     raw = load_generation_raw(raw_path)
+    validate_bundle_config(raw)
     generation = int(raw["generation"])
     geom = build_geometry(generation)
     analysis = analyze_generation_parity(raw, geom, modes=modes)
@@ -171,26 +172,17 @@ def produce_parity_analysis(
     manifest: Dict[str, object] = {"files": [], "generations": list(generations)}
     for generation in generations:
         gen_dir = raw_root / f"n{generation:02d}"
-        raw_files = sorted(gen_dir.glob("*.npz"))
-        if not raw_files:
+        if not gen_dir.is_dir():
             continue
-        mode_data: Dict[str, Dict[str, np.ndarray]] = {}
-        energies = None
-        for raw_file in raw_files:
-            mode_name = raw_file.stem
-            if modes is not None and mode_name not in modes:
-                continue
-            raw = load_generation_raw(raw_file)
-            if energies is None:
-                energies = raw["energies"]
-            mode_data[mode_name] = raw["modes"][mode_name]  # type: ignore[index]
-        if not mode_data:
-            continue
+        loaded = load_generation_bundle(gen_dir, modes=modes)
         bundle = {
-            "generation": generation,
-            "energies": energies,
-            "modes": mode_data,
+            "generation": int(loaded["generation"]),
+            "energies": loaded["energies"],
+            "modes": loaded["modes"],
+            "geometry_metadata": loaded.get("geometry_metadata"),
+            "run_metadata": loaded.get("run_metadata"),
         }
+        validate_bundle_config(bundle)
         geom = build_geometry(generation)
         analysis = analyze_generation_parity(bundle, geom)
         out = save_parity_analysis(

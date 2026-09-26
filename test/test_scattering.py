@@ -75,10 +75,10 @@ def test_single_barrier_matches_analytical_formula():
 def test_redheffer_matches_direct_two_layer_stack():
     geom = build_geometry(4) #ABA
     energy = 1.7
-    s_direct = stack_s_matrix(geom.widths, geom.potentials, energy)
+    s_direct = stack_s_matrix(geom.widths_nm, geom.potentials_ev, energy)
 
     q0 = q_number(energy, cfg.V_LEAD_EV).item()
-    q_layers = q_number(energy, geom.potentials)
+    q_layers = q_number(energy, geom.potentials_ev)
     s_manual = interface_s_matrix(q0, q_layers[0])
     s_manual = redheffer_star(s_manual, propagation_s_matrix(q_layers[0],geom.widths_nm[0]))
     s_manual = redheffer_star(s_manual, interface_s_matrix(q_layers[0], q_layers[1]))

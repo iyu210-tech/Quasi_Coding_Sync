@@ -62,6 +62,22 @@ def _windows_for_generations(generations: Sequence[int]) -> list:
         return usable
     return [(gens[0], gens[-1])]
 
+def _study_energies(raw_dir: str, generations: Optional[Sequence[int]]) -> np.ndarray:
+    from fibonacci_qc.raw_data import load_generation_bundle
+
+    raw_root = Path(raw_dir)
+    if not raw_root.is_absolute():
+        raw_root = cfg.OUTPUT_RAW / raw_root
+    if generations:
+        gen_dir = raw_root / f"n{int(list(generations)[0]):02d}"
+    else:
+        gen_dirs = sorted(p for p in raw_root.glob("n*") if p.is_dir() and p.name[1:].isdigit())
+        if not gen_dirs:
+            raise FileNotFoundError(f"no generation folders under {raw_root}")
+        gen_dir = gen_dirs[0]
+    bundle = load_generation_bundle(gen_dir)
+    return np.asarray(bundle["energies"], dtype=np.float64)
+
 def run_analyze_driver(
     *,
     raw_dir: str = "study",
@@ -112,7 +128,11 @@ def run_analyze_driver(
         "raw_dir": raw_dir,
         "generations": list(generations) if generations else None,
         "modes": list(modes) if modes else list(cfg.DEFECT_MODES),
-        "metadata": run_metadata(generations=list(generations or cfg.GENERATIONS), energies=cfg.energy_grid(), extra={"driver": "analyze"}),
+        "metadata": run_metadata(
+            generations=list(generations or cfg.GENERATIONS),
+            energies=_study_energies(raw_dir, generations),
+            extra={"driver": "analyze", "raw_dir": str(raw_dir)},
+        ),
         "products": {
             name: {"manifest_path": value.get("manifest_path"), "files": value.get("files")}
             for name, value in results.items()
@@ -122,106 +142,128 @@ def run_analyze_driver(
     results["analyze_manifest_path"] = str(summary_path)
     return results
 
-def run_figures_driver(
-    *,
-    raw_dir: str = "study",
-    generation: Optional[int] = None,
-    mode: str = cfg.MODE_SUBSTITUTION,
-    output_dir: str = "study",
-    n_replicates: int = 20,
-) -> dict:
-    "Build standard figure set for a generation/mode"
+def _resolve_raw(raw_dir: str) -> Path:
     raw_root = Path(raw_dir)
     if not raw_root.is_absolute():
         raw_root = cfg.OUTPUT_RAW / raw_root
+    return raw_root.resolve()
 
+def _require_same_raw(meta: dict, raw_root: Path) -> None:
+    run = meta.get("run_metadata") or {}
+    recorded = run.get("source_raw_dir", meta.get("source_raw_dir"))
+    if not recorded:
+        raise ValueError("saved product has no source_raw_dir")
+    recorded_path = Path(str(recorded))
+    if not recorded_path.is_absolute():
+        recorded_path = cfg.OUTPUT_RAW / recorded_path
+    if recorded_path.resolve() != raw_root:
+        raise ValueError(f"saved source {recorded_path} does not match selected raw run {raw_root}")
+
+class _Observed:
+    def __init__(self, s_max: float) -> None:
+        self.S_max = s_max
+
+class _NullPlot:
+    def __init__(self, samples: np.ndarray, s_max: float) -> None:
+        self.null_S_max = samples
+        self.observed = _Observed(s_max)
+
+def _nulls_for_plots(loaded: dict, mode: str, n_replicates: Optional[int]) -> dict:
+    arrays = loaded["arrays"]
+    meta = loaded["metadata"]
+    families = (meta.get("modes") or {}).get(mode) or {}
+    plotted = {}
+    for family, row in families.items():
+        samples_key = f"{mode}__{family}__null_S_max"
+        if samples_key not in arrays:
+            continue
+        saved = int(row["n_replicates"])
+        if n_replicates is not None and int(n_replicates) != saved:
+            raise ValueError(f"requested n_replicates={n_replicates} but {mode}/{family} was saved with {saved}")
+        plotted[family] = _NullPlot(arrays[samples_key], float(row["S_max"]))
+    return plotted
+
+def _scaling_for_plots(loaded: dict) -> dict:
+    meta = loaded["metadata"]
+    arrays = loaded["arrays"]
+    windows = {}
+    for key, window_meta in (meta.get("windows") or {}).items():
+        energies_key = f"{key}__energies"
+        if energies_key not in arrays:
+            continue
+        mode_fits = {}
+        for mode_name in window_meta.get("modes", {}):
+            alpha_key = f"{key}__{mode_name}__alpha"
+            if alpha_key not in arrays:
+                continue
+            fit = type("Fit", (), {})()
+            fit.alpha = arrays[alpha_key]
+            fit.support = arrays.get(f"{key}__{mode_name}__support")
+            fit.stable = arrays.get(f"{key}__{mode_name}__stable")
+            mode_fits[mode_name] = fit
+        paired = {}
+        for name in window_meta.get("paired", {}):
+            delta_key = f"{key}__pair__{name}__delta_alpha"
+            if delta_key in arrays:
+                paired[name] = {
+                    "delta_alpha": arrays[delta_key],
+                    "support": arrays.get(f"{key}__pair__{name}__support"),
+                }
+        windows[key] = {
+            "energies": arrays[energies_key],
+            "modes": mode_fits,
+            "common_support": arrays.get(f"{key}__common_support"),
+            "paired": paired,
+        }
+    return {"windows": windows}
+
+def run_figures_driver(*, raw_dir: str = "study", generation: Optional[int] = None, mode: str = cfg.MODE_SUBSTITUTION, output_dir: str = "study", n_replicates: Optional[int] = None) -> dict:
+    from fibonacci_qc.analysis_io import load_parity_analysis
+    from fibonacci_qc.nulls_io import load_nulls_analysis
+    from fibonacci_qc.raw_data import load_generation_bundle
+    from fibonacci_qc.resonance_io import load_interaction_remainder, load_resonance_analysis
+    from fibonacci_qc.scaling_io import load_scaling_analysis
+
+    raw_root = _resolve_raw(raw_dir)
     if generation is None:
-        gen_dirs = sorted(
-            p for p in raw_root.glob("n*") if p.is_dir() and p.name[1:].isdigit()
-        )
+        gen_dirs = sorted(p for p in raw_root.glob("n*") if p.is_dir() and p.name[1:].isdigit())
         if not gen_dirs:
             raise FileNotFoundError(f"no generation folders under {raw_root}")
         generation = int(gen_dirs[0].name[1:])
+    bundle = load_generation_bundle(raw_root / f"n{generation:02d}")
+    energies = np.asarray(bundle["energies"], dtype=np.float64)
 
-    mode_path = raw_root / f"n{generation:02d}" / f"{mode}.npz"
-    if not mode_path.exists():
-        # Use mode file to rebuild bundle
-        candidates = sorted((raw_root / f"n{generation:02d}").glob("*.npz"))
-        if not candidates:
-            raise FileNotFoundError(f"no raw files for generation {generation}")
-        mode_path = candidates[0]
+    def _saved(kind: str, filename: str) -> Optional[dict]:
+        path = cfg.OUTPUT_ANALYSIS / kind / f"n{generation:02d}" / filename
+        return path
 
-    # Load all modes for this generation
-    gen_dir = raw_root / f"n{generation:02d}"
-    modes_data = {}
-    energies = None
-    t_clean = None
-    log_clean = None
-    for path in sorted(gen_dir.glob("*.npz")):
-        raw = load_generation_raw(path)
-        if energies is None:
-            energies = raw["energies"]
-            t_clean = raw["T_clean"]
-            log_clean = raw["log_T_clean"]
-        modes_data.update(raw["modes"])
-    bundle = {
-        "generation": generation,
-        "energies": energies,
-        "T_clean": t_clean,
-        "log_T_clean": log_clean,
-        "modes": modes_data,
-    }
-    geom = build_geometry(generation)
-    parity = None
-    if mode in modes_data:
-        parity = analyze_mode_parity(modes_data[mode]["T"], geom, mode, energies=energies, sweep_valid=modes_data[mode]["valid"])
-    interaction = None
-    needed = cfg.MODE_SUBSTITUTION, cfg.MODE_POTENTIAL_ONLY, cfg.MODE_WIDTH_ONLY
-    if all(m in modes_data for m in needed):
-        interaction = interaction_from_sweeps(modes_data, t_clean=t_clean, log_t_clean=log_clean, energies=energies)
-    resonance = None
-    if modes_data:
-        resonance_full = analyze_generation_resonances(bundle, geom, modes=[mode] if mode in modes_data else None)
-        if mode in resonance_full["modes"]:
-            resonance = resonance_full["modes"][mode]
-    nulls = None
-    if mode in modes_data:
-        from fibonacci_qc.geometry_nulls import run_geometry_nulls
-        nulls = run_geometry_nulls(modes_data[mode]["T"], geom, mode, energies=energies, sweep_valid=modes_data[mode]["valid"], n_replicates=n_replicates, seed=0)
-
-    scaling = None
-    # Load saved scaling product if present
+    parity = resonance = interaction = nulls = scaling = None
+    parity_path = cfg.OUTPUT_ANALYSIS / "parity" / f"n{generation:02d}" / "parity.npz"
+    if parity_path.exists():
+        parity = load_parity_analysis(parity_path)
+        _require_same_raw(parity["metadata"], raw_root)
+    resonance_path = cfg.OUTPUT_ANALYSIS / "resonance" / f"n{generation:02d}" / "resonance.npz"
+    if resonance_path.exists():
+        resonance = load_resonance_analysis(resonance_path)
+        _require_same_raw(resonance["metadata"], raw_root)
+    interaction_path = cfg.OUTPUT_ANALYSIS / "resonance" / f"n{generation:02d}" / "interaction.npz"
+    if interaction_path.exists():
+        interaction = load_interaction_remainder(interaction_path)
+        _require_same_raw(interaction["metadata"], raw_root)
+    null_path = cfg.OUTPUT_ANALYSIS / "nulls" / f"n{generation:02d}" / "nulls.npz"
+    if null_path.exists():
+        loaded_nulls = load_nulls_analysis(null_path)
+        _require_same_raw(loaded_nulls["metadata"], raw_root)
+        nulls = _nulls_for_plots(loaded_nulls, mode if mode in bundle["modes"] else next(iter(bundle["modes"])), n_replicates)
     scaling_path = cfg.OUTPUT_ANALYSIS / "scaling" / "scaling.npz"
     if scaling_path.exists():
-        from fibonacci_qc.scaling_io import load_scaling_analysis
+        loaded_scaling = load_scaling_analysis(scaling_path)
+        _require_same_raw(loaded_scaling["metadata"], raw_root)
+        saved_gens = list((loaded_scaling["metadata"].get("run_metadata") or {}).get("generations") or [])
+        if generation not in saved_gens and saved_gens:
+            raise ValueError(f"scaling product generations {saved_gens} do not include generation {generation}")
+        scaling = _scaling_for_plots(loaded_scaling)
 
-        loaded = load_scaling_analysis(scaling_path)
-        # Make a scaling dict if metadata has windows (for plotting)
-        meta = loaded.get("metadata", {})
-        arrays = loaded.get("arrays", {})
-        windows = {}
-        for key in meta.get("windows", {}):
-            energies_key = f"{key}__energies"
-            if energies_key not in arrays:
-                continue
-            mode_alphas = {}
-            for mode_name in meta["windows"][key].get("modes", {}):
-                alpha_key = f"{key}__{mode_name}__alpha"
-                support_key = f"{key}__{mode_name}__support"
-                if alpha_key in arrays:
-                    class _Fit:
-                        pass
-                    fit = _Fit()
-                    fit.alpha = arrays[alpha_key]
-                    fit.support = arrays.get(support_key)
-                    mode_alphas[mode_name] = fit
-            windows[key] = {
-                "energies": arrays[energies_key],
-                "modes": mode_alphas,
-                "common_support": arrays.get(f"{key}__common_support"),
-            }
-        if windows:
-            scaling = {"windows": windows}
     written = produce_figures(
         raw_bundle=bundle,
         parity=parity,
@@ -230,7 +272,9 @@ def run_figures_driver(
         nulls=nulls,
         scaling=scaling,
         output_dir=output_dir,
-        mode=mode if mode in modes_data else next(iter(modes_data)),
+        mode=mode if mode in bundle["modes"] else next(iter(bundle["modes"])),
+        run_id=raw_root.name,
+        generation=generation,
     )
     meta_path = Path(output_dir)
     if not meta_path.is_absolute():
@@ -239,8 +283,9 @@ def run_figures_driver(
     figure_meta = {
         "generation": generation,
         "mode": mode,
+        "raw_dir": str(raw_root),
         "files": written,
-        "metadata": run_metadata(generations=[generation], energies=np.asarray(energies), extra={"driver": "figures"}),
+        "metadata": run_metadata(generations=[generation], energies=energies, extra={"driver": "figures", "raw_dir": str(raw_root)}),
     }
     meta_file = meta_path / "figures_manifest.json"
     meta_file.write_text(json.dumps(figure_meta, indent=2, default=str), encoding="utf-8")
@@ -269,7 +314,7 @@ def _build_figures_parser() -> argparse.ArgumentParser:
     p.add_argument("--generation", type=int, default=None)
     p.add_argument("--mode", default=cfg.MODE_SUBSTITUTION)
     p.add_argument("--output-dir", default="study")
-    p.add_argument("--n-replicates", type=int, default=20)
+    p.add_argument("--n-replicates", type=int, default=None)
     return p
 
 def main_raw(argv: Optional[Sequence[str]] = None) -> int:

@@ -45,6 +45,14 @@ class TransmissionResult:
     def is_valid(self) -> bool:
         return self.status in {"ok", "underflow"}
 
+STATUS_TO_CODE = {"ok": 0, "invalid": 1, "underflow": 2, "overflow": 3, "non_unitary": 4}
+
+def status_is_ok(status: np.ndarray) -> np.ndarray:
+    arr = np.asarray(status)
+    if np.issubdtype(arr.dtype, np.integer):
+        return arr == np.uint8(STATUS_TO_CODE["ok"])
+    return np.asarray(arr, dtype=str) == "ok"
+
 def q_number(energy_ev: ArrayLike, potential_ev: ArrayLike) -> np.ndarray:
     """
     Complex wave num Q(E,V)

@@ -11,7 +11,10 @@ from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
 
 ArrayLike = Union[np.ndarray, Sequence[float]]
 
-_TRAPEZOID = getattr(np, "trapezoid", np.trapz)
+if hasattr(np, "trapezoid"):
+    _TRAPEZOID = np.trapezoid
+else:
+    _TRAPEZOID = np.trapz
 
 SITE_CONDITIONING_FAMILIES: Tuple[str, ...] = ("site_letter", "site_3", "site_5")
 BOND_CONDITIONING_FAMILIES: Tuple[str, ...] = ("bond_pair", "bond_4", "bond_6")
@@ -95,8 +98,8 @@ def position_valid_mask(
     return valid
 
 def numerical_cell_mask(status: np.ndarray) -> np.ndarray:
-    "True if sweep cell status is ok"
-    return np.asarray(status, dtype=object) == "ok"
+    from fibonacci_qc.scattering import status_is_ok
+    return status_is_ok(status)
 
 def combine_analysis_mask(
     geometric_valid: np.ndarray,

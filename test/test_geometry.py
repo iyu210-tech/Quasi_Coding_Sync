@@ -57,7 +57,7 @@ def test_known_words(n, expected):
     verify_word(n, expected)
 
 def test_verify_word_rejects_length_mismatch():
-    with pytest.raises(ValueError, match = "does not equal"):
+    with pytest.raises(ValueError, match = "does not match"):
         verify_word(5,"AB")
 
 def test_physical_layer_mapping():
@@ -78,7 +78,7 @@ def test_generation_five_labels_and_uncompacted_phason_mask():
     np.testing.assert_array_equal(geom.site_parity, [0,1,0,1,0])
     np.testing.assert_array_equal(geom.bond_pairs, ["AB","BA","AA","AB"])
     np.testing.assert_array_equal(geom.phason_valid, [True, True, False, True])
-    assert geom.phason_valid.shape == (geom.n_bonds)
+    assert geom.phason_valid.shape == (geom.n_bonds,)
     #AA at index 2 stays false, mark not compacted
     assert geom.bond_index[2]==2
     assert geom.phason_valid[2] == False
@@ -112,8 +112,8 @@ def test_study_generations_match_locked_range_and_fn():
         b_mask = geom.letters == "B"
         assert np.all(geom.widths_nm[a_mask] == cfg.D_A_NM)
         assert np.all(geom.widths_nm[b_mask] == cfg.D_B_NM)
-        assert np.all(geom.potential_ev[a_mask] == cfg.V_A_EV)
-        assert np.all(geom.potential_ev[b_mask] == cfg.V_B_EV)
+        assert np.all(geom.potentials_ev[a_mask] == cfg.V_A_EV)
+        assert np.all(geom.potentials_ev[b_mask] == cfg.V_B_EV)
         for family in cfg.SITE_MOTIF_FAMILIES:
             assert geom.site_labels(family).shape == (geom.n_sites,)
         for family in cfg.BOND_MOTIF_FAMILIES:

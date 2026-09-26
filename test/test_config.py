@@ -15,7 +15,7 @@ def test_units_and_layer_parameters_are_locked():
     assert cfg.D_A_NM == 1.0
     assert cfg.V_A_EV == 0.01
     assert cfg.D_B_NM == 2.0
-    assert cfg.V_B_NM == 5.0
+    assert cfg.V_B_EV == 5.0
     assert cfg.LAYER_WIDTH_NM["A"] == cfg.D_A_NM
     assert cfg.LAYER_WIDTH_NM["B"] == cfg.D_B_NM
     assert cfg.LAYER_POTENTIAL_EV["A"] == cfg.V_A_EV
@@ -47,7 +47,7 @@ def test_config_is_frozen():
         CONFIG.v_lead_ev = 1.0
     clone = SimulationConfig()
     assert clone.as_dict()["d_a_nm"] == 1.0
-    assert clone.as_dict()["tolerances"]["t_bounds_atol"] == cfg.TOLERANCES.t_bounds.atol
+    assert clone.as_dict()["tolerances"]["t_bounds_atol"] == cfg.TOLERANCES.t_bounds.atol["tolerances"]["t_bounds_atol"]
 
 def test_output_paths_and_ensure_dirs():
     assert cfg.OUTPUT_ROOT == cfg.PROJECT_ROOT / "output"

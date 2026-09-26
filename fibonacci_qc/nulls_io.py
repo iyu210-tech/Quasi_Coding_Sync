@@ -10,7 +10,7 @@ import numpy as np
 from fibonacci_qc import config as cfg
 from fibonacci_qc.geometry import build_geometry
 from fibonacci_qc.geometry_nulls import (PermutationNullResult, analyze_generation_nulls, null_summary_table,)
-from fibonacci_qc.raw_data import load_generation_raw
+from fibonacci_qc.raw_data import load_generation_raw, load_generation_bundle
 from fibonacci_qc.robustness import (ContrastRobustness, ResonanceRobustness, analyze_generation_robustness,)
 
 PathLike = Union[str, Path]
@@ -195,29 +195,14 @@ def produce_nulls_analysis(
     }
     for generation in generations:
         gen_dir = raw_root / f"n{generation:02d}"
-        raw_files = sorted(gen_dir.glob("*.npz"))
-        if not raw_files:
-            continue
-        mode_data: Dict[str, Dict[str, np.ndarray]] = {}
-        energies = None
-        t_clean = None
-        for raw_file in raw_files:
-            mode_name = raw_file.stem
-            if modes is not None and mode_name not in modes:
-                continue
-            raw = load_generation_raw(raw_file)
-            if energies is None:
-                energies = raw["energies"]
-                t_clean = raw["T_clean"]
-            mode_data[mode_name] = raw["modes"][mode_name]  # type: ignore[index]
-        if not mode_data:
-            continue
-
+        loaded = load_generation_bundle(gen_dir, modes=modes)
         bundle = {
-            "generation": generation,
-            "energies": energies,
-            "T_clean": t_clean,
-            "modes": mode_data,
+            "generation": int(loaded["generation"]),
+            "energies": loaded["energies"],
+            "T_clean": loaded["T_clean"],
+            "modes": loaded["modes"],
+            "geometry_metadata": loaded.get("geometry_metadata"),
+            "run_metadata": loaded.get("run_metadata"),
         }
         geom = build_geometry(generation)
         analysis = analyze_generation_nulls(

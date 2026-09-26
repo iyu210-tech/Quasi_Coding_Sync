@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Dict, Mapping, Tuple
@@ -156,7 +156,7 @@ class SimulationConfig:
     scaling_loo_alpha_tol: float = SCALING_LOO_ALPHA_TOL
     scaling_rmse_max: float = SCALING_RMSE_MAX
     fit_generation_windows: Tuple[Tuple[int, int], ...] = FIT_GENERATION_WINDOWS
-    energy_windows: Mapping[str, Tuple[float, float]] = ENERGY_WINDOWS
+    energy_windows: Mapping[str, Tuple[float, float]] = field(default_factory=lambda: ENERGY_WINDOWS)
     tolerances: Tolerances = TOLERANCES
     output_root: str = str(OUTPUT_ROOT)
 
@@ -192,7 +192,14 @@ class SimulationConfig:
             "tolerances": asdict(self.tolerances),
             "output_root": self.output_root,
             "layer_width_nm": dict(LAYER_WIDTH_NM),
-            "layer_potential_ev": dict(LAYER_POTENTIAL_EV)
+            "layer_potential_ev": dict(LAYER_POTENTIAL_EV),
+            "substitution": dict(SUBSTITUTION),
+            "lead_left_token": LEAD_LEFT_TOKEN,
+            "lead_right_token": LEAD_RIGHT_TOKEN,
+            "one_site_modes": list(ONE_SITE_MODES),
+            "two_site_modes": list(TWO_SITE_MODES),
+            "site_motif_radius": dict(SITE_MOTIF_RADIUS),
+            "bond_motif_radius": dict(BOND_MOTIF_RADIUS),
         }
 
     def grid(self) -> np.ndarray:

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
 import numpy as np
+from pathlib import Path
+from typing import Optional, Sequence, Tuple, List
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.defects import apply_defect, apply_phason, validate_defect_position
 from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
 from fibonacci_qc.scattering import (
     SMatrix,
+    STATUS_TO_CODE,
     TransmissionResult,
     abeles_matrix,
     interface_s_matrix,
@@ -86,14 +88,11 @@ class StackCache:
         *,
         v_lead_ev: float = cfg.V_LEAD_EV,
     ) -> "StackCache":
-        widths = np.asarray(geometry.widths_nm, dtype = np.float64)
-        pots = np.asarray(geometry.potentials_ev, dtype=np.float64)
+        widths = np.asarray(geometry.widths_nm, dtype = np.float64, copy=True)
+        pots = np.asarray(geometry.potentials_ev, dtype=np.float64, copy=True)
         n_sites = int(widths.size)
         q0 = q_number(energy_ev, v_lead_ev).item()
-        q_layers = q_number(energy_ev, pots)
-
-        q0=q_number(energy_ev,v_lead_ev).item()
-        q_layers = q_number(energy_ev, pots)
+        q_layers = np.array(q_number(energy_ev, pots), copy=True)
 
         prefix_M = np.empty((n_sites+1,2,2), dtype=np.complex128)
         suffix_M = np.empty((n_sites + 1, 2, 2), dtype=np.complex128)
@@ -102,8 +101,9 @@ class StackCache:
             prefix_M[idx+1] = abeles_matrix(q_layers[idx], float(widths[idx])) @ prefix_M[idx]
         suffix_M[n_sites] = np.eye(2, dtype=np.complex128)
         for idx in range(n_sites -1, -1, -1):
-            suffix_M[idx] = suffix_M[idx+1] @ abeles_matrix(q_layers[idx], float(widths[i]))
-        
+            suffix_M[idx] = suffix_M[idx+1] @ abeles_matrix(q_layers[idx], float(widths[idx]))
+        for array in (widths, pots, q_layers, prefix_M, suffix_M):
+            array.setflags(write=False)
         return cls(energy_ev=float(energy_ev), generation = geometry.generation,
                    n_sites=n_sites, q_lead=q0, q_layers=q_layers, widths_nm=widths,
                    potentials_ev = pots, prefix_M=prefix_M, suffix_M=suffix_M)
@@ -201,7 +201,18 @@ def fast_transmission(mode: str, position: int, cache: StackCache, geometry: Fib
 
 from fibonacci_qc.parity_analysis import numerical_cell_mask
 
-def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[FibonacciGeometry] = None,generation: Optional[int]=None, v_lead_ev:float = cfg.V_LEAD_EV) -> dict[str, np.ndarray]:
+def _allocate(shape, dtype, fill, spill_dir, name):
+    if spill_dir is None:
+        array = np.empty(shape, dtype=dtype)
+    else:
+        folder = Path(spill_dir)
+        folder.mkdir(parents=True, exist_ok=True)
+        array = np.memmap(folder / f"{name}.dat", mode="w+", dtype=dtype, shape=shape)
+    if fill is not None:
+        array.fill(fill)
+    return array
+
+def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[FibonacciGeometry] = None, generation: Optional[int]=None, v_lead_ev:float = cfg.V_LEAD_EV, energy_chunk: int = 64, spill_dir: Optional[object]=None) -> dict[str, np.ndarray]:
     geom = _resolve_geometry(geometry, generation)
     energies = np.asarray(energies_ev, dtype =np.float64)
     n_pos = geom.n_bonds if mode == cfg.MODE_PHASON else geom.n_sites
@@ -210,26 +221,41 @@ def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[Fibonacc
     for p in positions:
         ok, _ = validate_defect_position(mode, int(p), geom)
         valid_mask[p] = ok
-    t_arr = np.full((n_pos, energies.size), np.nan, dtype=np.float64)
-    log_arr = np.full((n_pos, energies.size), np.nan, dtype=np.float64)
-    status_arr = np.empty((n_pos, energies.size), dtype=object)
-
-    t_clean=np.empty(energies.size, dtype = np.float64)
+    step = max(int(energy_chunk), 1)
+    invalid = np.uint8(STATUS_TO_CODE["invalid"])
+    t_arr = _allocate((n_pos, energies.size), np.float64, np.nan, spill_dir, "T")
+    log_arr = _allocate((n_pos, energies.size), np.float64, np.nan, spill_dir, "log_T")
+    status_arr = _allocate((n_pos, energies.size), np.uint8, invalid, spill_dir, "status")
+    t_clean = np.empty(energies.size, dtype=np.float64)
     log_clean = np.empty(energies.size, dtype=np.float64)
 
-    for e_idx, energy in enumerate(energies):
-        cache = StackCache.build(geom, float(energy), v_lead_ev=v_lead_ev)
-        clean = cache.clean_transmission()
-        t_clean[e_idx] = clean.T
-        log_clean[e_idx] = clean.log_T
-        for p in positions:
-            if not valid_mask[p]:
-                status_arr[p,e_idx] = "invalid"
-                continue
-            result = fast_transmission(mode, int(p), cache, geom)
-            t_arr[p, e_idx] = result.T
-            log_arr[p, e_idx] = result.log_T
-            status_arr[p, e_idx] = result.status
+    for start in range(0, energies.size, step):
+        stop = min(start + step, energies.size)
+        for e_idx in range(start, stop):
+            cache = StackCache.build(geom, float(energies[e_idx]), v_lead_ev=v_lead_ev)
+            clean = cache.clean_transmission()
+            t_clean[e_idx] = clean.T
+            log_clean[e_idx] = clean.log_T
+            for p in positions:
+                if not valid_mask[p]:
+                    status_arr[p, e_idx] = invalid
+                    continue
+                result = fast_transmission(mode, int(p), cache, geom)
+                t_arr[p, e_idx] = result.T
+                log_arr[p, e_idx] = result.log_T
+                status_arr[p, e_idx] = np.uint8(STATUS_TO_CODE.get(result.status, STATUS_TO_CODE["invalid"]))
+        for array in (t_arr, log_arr, status_arr):
+            if hasattr(array, "flush"):
+                array.flush()
+
+    if spill_dir is None:
+        delta = t_arr - t_clean[np.newaxis, :]
+    else:
+        delta = _allocate(t_arr.shape, np.float64, None, spill_dir, "delta_T")
+        for start in range(0, energies.size, step):
+            stop = min(start + step, energies.size)
+            delta[:, start:stop] = np.asarray(t_arr[:, start:stop]) - t_clean[start:stop]
+        delta.flush()
 
     cell_ok = numerical_cell_mask(status_arr)
 
@@ -240,7 +266,7 @@ def fast_sweep(mode:str, energies_ev: np.ndarray, *, geometry: Optional[Fibonacc
         "energies": energies,
         "T": t_arr,
         "log_T": log_arr,
-        "delta_T": t_arr - t_clean[np.newaxis, :],
+        "delta_T": delta,
         "T_clean": t_clean,
         "log_T_clean": log_clean,
         "valid": valid_mask,

@@ -121,27 +121,16 @@ def _load_raw_bundles(
     generations: Sequence[int],
     modes: Sequence[str],
 ) -> Dict[int, Dict[str, object]]:
+    from fibonacci_qc.raw_data import assert_same_run, load_generation_bundle
     bundles: Dict[int, Dict[str, object]] = {}
+    anchor = None
     for generation in generations:
-        gen_dir = raw_dir / f"n{generation:02d}"
-        mode_data: Dict[str, Dict[str, np.ndarray]] = {}
-        energies = None
-        for mode in modes:
-            path = gen_dir / f"{mode}.npz"
-            if not path.exists():
-                # Allow combined file named after a mode that contains several
-                continue
-            raw = load_generation_raw(path)
-            if energies is None:
-                energies = raw["energies"]
-            mode_data[mode] = raw["modes"][mode]
-        if not mode_data or energies is None:
-            continue
-        bundles[generation] = {
-            "generation": generation,
-            "energies": energies,
-            "modes": mode_data,
-        }
+        bundle = load_generation_bundle(raw_dir / f"n{generation:02d}", modes=modes)
+        if anchor is None:
+            anchor = bundle
+        else:
+            assert_same_run(anchor, bundle, where=f"generation {generation}", same_generation=False)
+        bundles[generation] = bundle
     return bundles
 
 def produce_scaling_analysis(
