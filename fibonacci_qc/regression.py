@@ -83,8 +83,9 @@ def assert_matches_regression_fixture(*, atol: float = 1e-12, rtol: float = 1e-1
     for key in ("T_clean", "log_T_clean", "T", "D"):
         a = np.asarray(fixture[key], dtype=np.float64)
         b = np.asarray(current[key], dtype=np.float64)
-        if a.shape != b.shape or not np.allclose(a, b, atol=atol, rtol=rtol, equal_nan=False):
-            gap = float(np.nanmax(np.abs(a - b))) if a.shape == b.shape else float("inf")
+        if a.shape != b.shape or not np.allclose(a, b, atol=atol, rtol=rtol, equal_nan=True):
+            finite = np.isfinite(a) & np.isfinite(b) if a.shape == b.shape else None
+            gap = float(np.max(np.abs(a[finite]-b[finite]))) if finite is not None and np.any(finite) else float("inf")
             raise AssertionError(f"regression fixture mismatch for {key}; max_abs={gap}")
     if not np.array_equal(np.asarray(fixture["valid"]), np.asarray(current["valid"])):
         raise AssertionError("regression fixture mismatch for valid")

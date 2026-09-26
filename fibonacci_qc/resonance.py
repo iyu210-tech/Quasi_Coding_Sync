@@ -297,7 +297,7 @@ def track_resonances(
         clean_spectrum,
         energies,
         min_prominence=min_prominence,
-        min_distance=min_distance_ev,
+        min_distance_ev=min_distance_ev,
     )
     if clean_peaks is None:
         clean_peaks_list = detect_peaks(clean_spectrum, energies, min_prominence=min_prominence, min_distance_ev=min_distance_ev)
@@ -307,7 +307,7 @@ def track_resonances(
         defect_spectrum,
         energies,
         min_prominence=min_prominence,
-        min_distance=min_distance_ev,
+        min_distance_ev=min_distance_ev,
     )
     match = match_peaks_order_preserving(clean_peaks_list, defect_peaks, max_delta_e=max_delta_e)
     mean_d, mean_abs, rms = _shift_stats(match.matched)
@@ -354,7 +354,7 @@ def analyze_mode_resonances(
                 parity=int(parity[p]),
                 valid=bool(valid[p]),
                 min_prominence=min_prominence,
-                min_distance=min_distance_ev,
+                min_distance_ev=min_distance_ev,
                 clean_peaks=clean_peaks,
             )
         )
@@ -475,7 +475,7 @@ def analyze_generation_resonances(
             mode,
             sweep_valid=np.asarray(sweep["valid"], dtype=bool),
             min_prominence=min_prominence,
-            min_distance=min_distance_ev,
+            min_distance_ev=min_distance_ev,
         )
     return {
         "generation": generation,

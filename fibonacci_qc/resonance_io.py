@@ -227,8 +227,10 @@ def analyze_raw_interaction_and_resonance_from_bundle(
     *,
     modes: Optional[Sequence[str]] = None,
     save_dir: Optional[PathLike] = None,
+    source_raw_dir: Optional[str] = None,
 ) -> Dict[str, object]:
     "Run interaction and resonance analysis on one generation bundle"
+    run_meta = {"source_raw_dir": source_raw_dir} if source_raw_dir is not None else None
     generation = int(bundle["generation"])
     geom = build_geometry(generation)
     modes_dict: Dict[str, Dict[str, np.ndarray]] = dict(bundle["modes"])
@@ -249,7 +251,7 @@ def analyze_raw_interaction_and_resonance_from_bundle(
         )
         result["interaction"] = remainder
         if save_dir is not None:
-            save_interaction_remainder(remainder, Path(save_dir) / f"n{generation:02d}" / "interaction.npz", generation=generation)
+            save_interaction_remainder(remainder, Path(save_dir) / f"n{generation:02d}" / "interaction.npz", generation=generation, metadata=run_meta)
     resonance = analyze_generation_resonances(
         {
             "generation": generation,
@@ -262,7 +264,7 @@ def analyze_raw_interaction_and_resonance_from_bundle(
     )
     result["resonance"] = resonance
     if save_dir is not None:
-        save_resonance_analysis(resonance, Path(save_dir) / f"n{generation:02d}" / "resonance.npz")
+        save_resonance_analysis(resonance, Path(save_dir) / f"n{generation:02d}" / "resonance.npz", metadata=run_meta)
     return result
 
 def produce_resonance_analysis(
@@ -300,7 +302,7 @@ def produce_resonance_analysis(
             modes=list(modes or cfg.DEFECT_MODES),
             require_modes=list(modes or cfg.DEFECT_MODES)
         )
-        result = analyze_raw_interaction_and_resonance(bundle, modes=modes, save_dir=out_root, source_raw_dir=str(raw_root),)
+        result = analyze_raw_interaction_and_resonance_from_bundle(bundle, modes=modes, save_dir=out_root, source_raw_dir=str(raw_root),)
         manifest["files"].append(
             {
                 "generation": generation,

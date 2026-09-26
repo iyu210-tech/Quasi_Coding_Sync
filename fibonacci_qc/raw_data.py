@@ -254,7 +254,12 @@ def load_generation_bundle(
 ) -> Dict[str, object]:
     "Loads one generation & validates generation, energies, T_clean across files."
     gen_dir = Path(gen_dir)
-    wanted = list(require_modes or modes or cfg.DEFECT_MODES)
+    if require_modes is not None:
+        wanted = list(require_modes)
+    elif modes is not None:
+        wanted = list(modes)
+    else:
+        wanted = []
     mode_data: Dict[str, Dict[str, np.ndarray]] = {}
     energies = None
     t_clean = None
