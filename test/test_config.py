@@ -47,7 +47,7 @@ def test_config_is_frozen():
         CONFIG.v_lead_ev = 1.0
     clone = SimulationConfig()
     assert clone.as_dict()["d_a_nm"] == 1.0
-    assert clone.as_dict()["tolerances"]["t_bounds_atol"] == cfg.TOLERANCES.t_bounds.atol["tolerances"]["t_bounds_atol"]
+    assert clone.as_dict()["tolerances"]["t_bounds_atol"] == cfg.TOLERANCES.t_bounds_atol
 
 def test_output_paths_and_ensure_dirs():
     assert cfg.OUTPUT_ROOT == cfg.PROJECT_ROOT / "output"

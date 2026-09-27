@@ -1,6 +1,7 @@
 "Save and load parity analysis products"
 
 from __future__ import annotations
+
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -25,6 +26,10 @@ def _contrast_to_arrays(result: ParityContrastResult) -> Dict[str, np.ndarray]:
         "D": result.D,
         "n_even": np.array(result.n_even, dtype=np.int64),
         "n_odd": np.array(result.n_odd, dtype=np.int64),
+        "n_even_by_energy": result.n_even_by_energy,
+        "n_odd_by_energy": result.n_odd_by_energy,
+        "coverage_by_energy": result.coverage_by_energy,
+        "coverage": np.array(result.coverage),
     }
 
 def save_parity_analysis(
@@ -88,6 +93,12 @@ def save_parity_analysis(
             for mode, payload in modes.items()
         },
         "run_metadata": metadata or {},
+        "numerical_failure": bool(analysis.get("numerical_failure", False)),
+        "response": {m: {w: asdict(v) for w, v in p.get("response", {}).items()} for m,p in modes.items()},
+        "response_averaging": "unweighted mean over geometrically eligible, trusted finite-grid cells",
+        "numerical_summary": {m: {"n_certified_underflow": p.get("n_certified_underflow", 0),
+                                  "n_invalid": p.get("n_invalid", 0),
+                                  "numerical_failure": p.get("numerical_failure", False)} for m,p in modes.items()},
     }
     meta_path = out.with_suffix(".meta.json")
     meta_path.write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
@@ -169,15 +180,18 @@ def produce_parity_analysis(
             for p in raw_root.glob("n*")
             if p.is_dir() and p.name[1:].isdigit()
         )
-    manifest: Dict[str, object] = {"files": [], "generations": list(generations)}
+    manifest: Dict[str, object] = {"files": [], "generations": list(generations), "numerical_failure": False}
     for generation in generations:
         gen_dir = raw_root / f"n{generation:02d}"
         if not gen_dir.is_dir():
-            continue
+            raise FileNotFoundError(f"missing requested generation: {gen_dir}")
         loaded = load_generation_bundle(gen_dir, modes=modes)
         bundle = {
             "generation": int(loaded["generation"]),
             "energies": loaded["energies"],
+            "T_clean": loaded["T_clean"],
+            "log_T_clean": loaded["log_T_clean"],
+            "clean_status": loaded["clean_status"],
             "modes": loaded["modes"],
             "geometry_metadata": loaded.get("geometry_metadata"),
             "run_metadata": loaded.get("run_metadata"),
@@ -185,6 +199,7 @@ def produce_parity_analysis(
         validate_bundle_config(bundle)
         geom = build_geometry(generation)
         analysis = analyze_generation_parity(bundle, geom)
+        manifest["numerical_failure"] |= bool(analysis["numerical_failure"])
         out = save_parity_analysis(
             analysis,
             out_root / f"n{generation:02d}" / "parity.npz",

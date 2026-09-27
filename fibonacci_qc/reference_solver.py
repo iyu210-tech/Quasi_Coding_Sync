@@ -94,9 +94,7 @@ def delta_t(
         t_clean_val = clean.T
     else:
         t_clean_val = float(t_clean)
-    t_result, defected = reference_transmission(
-        mode, position, energy_ev, geometry=geom, v_lead_ev=v_lead_ev,
-    )
+    t_result, defected = reference_transmission(mode, position, energy_ev, geometry=geom, v_lead_ev=v_lead_ev)
     if not defected.valid:
         return DefectTransmissionResult(
             mode=mode,
@@ -145,9 +143,7 @@ def reference_sweep(
 
     t_clean = np.empty(n_e, dtype=np.float64)
     for e_idx, energy in enumerate(energies.flat):
-        t_clean.flat[e_idx] = clean_transmission(
-            geom.generation, float(energy), geometry = geom, v_lead_ev=v_lead_ev,
-        ).T
+        t_clean.flat[e_idx] = clean_transmission(geom.generation, float(energy), geometry = geom, v_lead_ev=v_lead_ev).T
     t_arr = np.full((n_pos, n_e), np.nan,dtype=np.float64)
     log_arr = np.full((n_pos, n_e), np.nan, dtype=np.float64)
     delta_arr = np.full((n_pos, n_e), np.nan, dtype=np.float64)
@@ -179,6 +175,7 @@ def reference_sweep(
         "valid": valid_arr,
         "status": status_arr,
     }
+
 
 def save_delta_t(
     sweep: Dict[str, np.ndarray],

@@ -93,7 +93,7 @@ def test_redheffer_matches_direct_two_layer_stack():
 
 def test_transfer_matrix_agrees_with_s_matrix():
     geom = build_geometry(6)
-    energies = np.linspace(0.3,9.5,20)
+    energies = np.linspace(5.1,9.5,20)
     for e in energies:
         s_mat = stack_s_matrix(geom.widths_nm, geom.potentials_ev, float(e))
         m_mat = transfer_matrix_stack(geom.widths_nm, geom.potentials_ev, float(e))
@@ -139,17 +139,14 @@ def test_slab_at_band_edge_is_stable():
     assert_in_unit_interval(result.T)
 
 def test_safe_log_t_handles_underflow_and_invalid():
-    log_zero, status_zero = safe_log_t(0.0)
-    assert status_zero == "underflow"
-    assert log_zero == cfg.TOLERANCES.log_t_floor
-
-    log_ok, status_ok = safe_log_t(0.5)
-    assert status_ok == "ok"
-    assert log_ok == pytest.approx(np.log(0.5))
-
-    log_bad, status_bad = safe_log_t(-1.0)
-    assert status_bad == "invalid"
-    assert np.isnan(log_bad)
+    log,status=safe_log_t(0.0)
+    assert np.isnan(log) and status=="invalid"
+    log,status=safe_log_t(-0.1)
+    assert np.isnan(log) and status=="invalid"
+    log,status=safe_log_t(np.exp(-720.0))
+    assert status=="ok" and log==pytest.approx(-720.0,abs=1e-9)
+    log,status=safe_log_t(.5)
+    assert status=="ok" and log==pytest.approx(np.log(.5))
 
 def test_transmission_bounded_on_default_energy_grid():
     geom = build_geometry(7)

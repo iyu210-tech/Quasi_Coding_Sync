@@ -45,9 +45,7 @@ class MatchResult:
     total_displacement: float = 0.0
     def __post_init__(self) -> None:
         self.n_matched = len(self.matched)
-        self.total_displacement = float(
-            sum(abs(m.delta_E) for m in self.matched)
-        )
+        self.total_displacement = float(sum(abs(m.delta_E) for m in self.matched) if self.matched else float("nan"))
 
 @dataclass(frozen=True)
 class ResonanceTrack:
@@ -63,20 +61,28 @@ class ResonanceTrack:
     mean_abs_delta_E: float
     rms_delta_E: float
 
-def _refine_peak_energy(values: np.ndarray, energies: np.ndarray, index: int) -> float:
-    if index <= 0 or index >= values.size - 1:
+def _refine_peak_energy(values, energies, index):
+    if index <= 0 or index >= len(values)-1:
         return float(energies[index])
-    y0, y1, y2 = float(values[index - 1]), float(values[index]), float(values[index + 1])
-    denom = (y0 - 2.0 * y1 + y2)
-    if abs(denom) < 1e-300 or not np.isfinite(denom):
+    x = np.asarray(energies[index-1:index+2], dtype=float) - float(energies[index])
+    y = np.asarray(values[index-1:index+2], dtype=float)
+    if not np.all(np.isfinite(y)): return float(energies[index])
+    # Local quadratic in actual energy
+    a, b, _ = np.polyfit(x, y, 2)
+    if a >= 0 or not np.isfinite(a) or abs(a) < 1e-300:
         return float(energies[index])
-    delta = 0.5 * (y0 - y2) / denom
-    delta = float(np.clip(delta, -1.0, 1.0))
-    e0, e1, e2 = float(energies[index - 1]), float(energies[index]), float(energies[index + 1])
-    if delta <= 0.0:
-        return e1 + delta * (e1 - e0)
-    return e1 + delta * (e2 - e1)
+    shift = -b / (2 * a)
+    return float(energies[index]+shift) if x[0] <= shift <= x[-1] else float(energies[index])
 
+def _baseline_prominence(y, i):
+    peak = float(y[i]); left = peak; right = peak
+    for j in range(i - 1, -1, -1):
+        if not np.isfinite(y[j]) or y[j] > peak: break
+        left = min(left, float(y[j]))
+    for j in range(i + 1, len(y)):
+        if not np.isfinite(y[j]) or y[j] > peak: break
+        right = min(right, float(y[j]))
+    return peak - max(left, right)
 
 def detect_peaks(
     values: np.ndarray,
@@ -92,6 +98,8 @@ def detect_peaks(
         raise ValueError("values and energies must have the same shape")
     if y.ndim != 1:
         raise ValueError("values must be one-dimensional")
+    if not np.all(np.isfinite(e)) or not np.all(np.diff(e) > 0):
+        raise ValueError("peak energies must be finite and strictly increasing")
     if y.size < 3:
         return []
     candidates: List[Peak] = []
@@ -99,7 +107,7 @@ def detect_peaks(
         if not (np.isfinite(y[i]) and np.isfinite(y[i - 1]) and np.isfinite(y[i + 1])):
             continue
         if y[i] > y[i - 1] and y[i] >= y[i + 1]:
-            prominence = float(y[i] - max(y[i - 1], y[i + 1]))
+            prominence = _baseline_prominence(y, i)
             if prominence + 1e-15 < min_prominence:
                 continue
             candidates.append(
@@ -150,7 +158,7 @@ def match_peaks_order_preserving(
                 cost = abs(a[i - 1].energy - b[j - 1].energy)
                 if cost <= max_delta_e + 1e-15:
                     prev_m, prev_c = best[i-1][j-1]
-                    candidates.append((prev_m + 1, prev_c - cost),2)
+                    candidates.append(((prev_m + 1, prev_c - cost), 2))
             chosen_state, chosen_op = max(candidates, key=lambda item: item[0])
             best[i][j] = chosen_state
             choice[i][j] = chosen_op
@@ -279,7 +287,7 @@ def track_resonances(
     clean_peaks: Optional[Sequence[Peak]] = None,
 ) -> ResonanceTrack:
     "Detect and match peaks"
-    if not valid:
+    if not valid or not np.all(np.isfinite(clean_spectrum)) or not np.all(np.isfinite(defect_spectrum)):
         empty = MatchResult()
         return ResonanceTrack(
             mode=mode,
@@ -293,12 +301,6 @@ def track_resonances(
             mean_abs_delta_E=float("nan"),
             rms_delta_E=float("nan"),
         )
-    clean_peaks = detect_peaks(
-        clean_spectrum,
-        energies,
-        min_prominence=min_prominence,
-        min_distance_ev=min_distance_ev,
-    )
     if clean_peaks is None:
         clean_peaks_list = detect_peaks(clean_spectrum, energies, min_prominence=min_prominence, min_distance_ev=min_distance_ev)
     else:
@@ -444,7 +446,7 @@ def summarize_resonance_tracks(
         # keep prior keys as the pooled estimand for back-compat:
         **pooled,
     }
-    by_parity["even" if parity_value == 0 else "odd"] = stats
+        by_parity["even" if parity_value == 0 else "odd"] = stats
     return {"by_position": by_position, "by_parity": by_parity}
 
 def analyze_generation_resonances(
@@ -462,13 +464,22 @@ def analyze_generation_resonances(
         raise ValueError(f"geometry.generation={geom.generation} does not match bundle={generation}")
     energies = np.asarray(raw_bundle["energies"], dtype=np.float64)
     t_clean = np.asarray(raw_bundle["T_clean"], dtype=np.float64)
-    modes_dict: Dict[str, Dict[str, np.ndarray]] = raw_bundle["modes"]  # type: ignore[assignment]
+
+    from fibonacci_qc.scattering import trusted_transmission_mask
+    
+    clean_ok = trusted_transmission_mask(raw_bundle["clean_status"], t_clean, raw_bundle["log_T_clean"])
+    t_clean = np.where(clean_ok, t_clean, np.nan)
+    modes_dict: Dict[str, Dict[str, np.ndarray]] = raw_bundle["modes"]
+    numerical_failure = not bool(np.all(clean_ok))
     modes = list(modes or modes_dict.keys())
     mode_results: Dict[str, object] = {}
     for mode in modes:
         sweep = modes_dict[mode]
+        cell = trusted_transmission_mask(sweep["status"], sweep["T"], sweep["log_T"])
+        intended = position_valid_mask(geom, mode, sweep_valid=sweep["valid"])
+        numerical_failure |= bool(np.any(~cell[intended]))
         mode_results[mode] = analyze_mode_resonances(
-            sweep["T"],
+            np.where(cell, sweep["T"], np.nan),
             t_clean,
             energies,
             geom,
@@ -481,5 +492,9 @@ def analyze_generation_resonances(
         "generation": generation,
         "energies": energies,
         "geometry_metadata": geom.to_metadata(),
+        "numerical_failure": numerical_failure,
+        "tracking_scope": "within_generation_clean_versus_defect",
+        "cross_generation_identity": False,
+        "match_gate_max_delta_e_ev": DEFAULT_MAX_MATCH_DELTA_E_EV,
         "modes": mode_results,
     }

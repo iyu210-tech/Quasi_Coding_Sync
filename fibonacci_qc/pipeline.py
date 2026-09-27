@@ -34,68 +34,57 @@ def clear_output_tree(*, keep_gitkeep: bool = True) -> None:
 
 def run_pipeline(
     *,
-    generations: Optional[Sequence[int]] = None,
-    modes: Optional[Sequence[str]] = None,
-    n_energy: Optional[int] = None,
-    n_replicates: Optional[int] = None,
-    raw_dir: Optional[str] = None,
-    figure_dir: Optional[str] = None,
-    clear_outputs: bool = False,
-    profile: str = "smoke",
-    validate: bool = True,
-) -> Dict[str, object]:
-    if profile == "production":
-        gens = list(generations or cfg.GENERATIONS)
-        mode_list = list(modes or cfg.DEFECT_MODES)
-        n_energy_use = cfg.N_ENERGY if n_energy is None else n_energy
-        n_replicates_use = cfg.PERMUTATION_REPLICATES if n_replicates is None else n_replicates
-    elif profile == "smoke":
-        gens = list(generations or [4, 5, 6, 7])
-        mode_list = list(modes or [cfg.MODE_SUBSTITUTION, cfg.MODE_WIDTH_ONLY])
-        n_energy_use = 12 if n_energy is None else n_energy
-        n_replicates_use = 12 if n_replicates is None else n_replicates
-    else:
-        raise ValueError(f"unknown profile {profile!r}")
+    generations=None,
+    modes=None,
+    n_energy=None,
+    n_replicates=None,
+    raw_dir=None,
+    figure_dir=None,
+    clear_outputs=False,
+    profile="smoke",
+    validate=True
+):
+    if profile not in {"smoke","production"}: raise ValueError("unknown profile")
+    prod = profile == "production"
+    gens = list((cfg.GENERATIONS if prod else [4,5,6,7]) if generations is None else generations)
+    wanted = list((cfg.DEFECT_MODES if prod else [cfg.MODE_SUBSTITUTION,cfg.MODE_WIDTH_ONLY]) if modes is None else modes)
+    ne = (cfg.N_ENERGY if prod else 12) if n_energy is None else int(n_energy)
+    nr = (cfg.PERMUTATION_REPLICATES if prod else 12) if n_replicates is None else int(n_replicates)
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    if prod and (set(gens) != set(cfg.GENERATIONS) or set(wanted)!=set(cfg.DEFECT_MODES) or ne<cfg.N_ENERGY or nr<cfg.PERMUTATION_REPLICATES):
+        raise ValueError("production must cover generations 10-20, all four modes, >=2000 energies, and >=500 permutations")
+    if prod and not validate:raise ValueError("production requires numerical reference cross-checks")
+    if clear_outputs:raise ValueError("automatic deletion disabled; supply fresh run name")
+    
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     raw_name = raw_dir or f"{profile}_{stamp}"
     figure_name = figure_dir or raw_name
-    if clear_outputs:
-        for root, name in ((cfg.OUTPUT_RAW, raw_name), (cfg.OUTPUT_FIGURES, figure_name)):
-            path = Path(name) if Path(name).is_absolute() else root / name
-            if path.exists():
-                shutil.rmtree(path)
-
-    raw_manifest = run_raw_driver(generations=gens, modes=mode_list, n_energy=n_energy_use, output_dir=raw_name, validate=validate)
-    analyze_manifest = run_analyze_driver(raw_dir=raw_name, generations=gens, modes=mode_list, n_replicates=n_replicates_use)
-    figures_manifest = run_figures_driver(raw_dir=raw_name, generation=gens[0], mode=mode_list[0], output_dir=figure_name, n_replicates=None)
-    rows = analyze_manifest["scaling"].get("summary") or []
-    scaling_supported = any(int(row.get("n_support", 0)) > 0 for row in rows)
-    if profile == "production" and not scaling_supported:
-        raise RuntimeError("production profile produced no supported scaling fit")
+    raw = run_raw_driver(generations=gens,modes=wanted,n_energy=ne,output_dir=raw_name,validate=validate)
+    analysis = run_analyze_driver(raw_dir=raw_name,generations=gens,modes=wanted,n_replicates=nr)
+    figures = run_figures_driver(raw_dir=raw_name,generation=gens[0],mode=wanted[0],output_dir=figure_name,n_replicates=None)
+    scaling_supported = any(int(r.get("n_support", 0)) > 0 for r in analysis["scaling"].get("summary",[]))
+    gate = analysis["robustness"].get("primary_gate","unresolved")
+    primary_ok = gate == "pass" and not analysis["parity"].get("numerical_failure",True)
+    
     payload = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "profile": profile,
-        "scientific_claim": profile == "production" and scaling_supported,
+        "scientific_claim": bool(prod and primary_ok),
+        "numerically_accepted": bool(prod and primary_ok),
+        "acceptance_meaning": "sampled numerical criteria passed",
+        "primary_gate": gate,
         "scaling_supported": scaling_supported,
         "generations": gens,
-        "modes": mode_list,
-        "n_energy": n_energy_use,
-        "n_replicates": n_replicates_use,
-        "raw_dir": raw_name,
-        "metadata": run_metadata(generations=gens, energies=cfg.energy_grid(n_points=n_energy_use), extra={"driver": "pipeline", "profile": profile}),
-        "raw": {"manifest_path": raw_manifest.get("manifest_path"), "files": raw_manifest.get("files"), "peak_rss_bytes": raw_manifest.get("peak_rss_bytes")},
-        "analyze": {"manifest_path": analyze_manifest.get("analyze_manifest_path")},
-        "figures": figures_manifest,
-    }
-    rows = analyze_manifest["scaling"].get("summary") or []
-    scaling_supported = any(int(row.get("n_support", 0)) > 0 for row in rows)
-    payload["scaling_supported"] = scaling_supported
-    payload["scientific_claim"] = scaling_supported
-    out = cfg.OUTPUT_METADATA / f"pipeline_{profile}_{stamp}.json"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    payload["pipeline_manifest_path"] = str(out)
+        "modes": wanted,
+        "n_energy":ne,
+        "n_replicates":nr,
+        "raw_dir":str(raw_name),
+        "metadata":run_metadata(generations=gens, energies=cfg.energy_grid(n_points=ne), extra={"driver" : "pipeline", "profile": profile}),
+        "raw":{k:raw.get(k) for k in ("manifest_path", "files", "peak_rss_bytes")},
+        "analyze":{"manifest_path":analysis["analyze_manifest_path"]},"figures":figures}
+    path = cfg.OUTPUT_METADATA/f"pipeline_{profile}_{stamp}.json"; path.parent.mkdir(parents=True,exist_ok=True)
+    path.write_text(json.dumps(payload,indent=2),encoding="utf-8"); payload["pipeline_manifest_path"]=str(path)
+    if prod and not primary_ok:raise RuntimeError(f"production numerical acceptance blocked by {gate}; diagnostics saved to {path}")
     return payload
 
 def _finite_match(left: np.ndarray, right: np.ndarray, *, atol: float, rtol: float):

@@ -374,6 +374,12 @@ def produce_figures(
             remainder, energies, positions = interaction.I, interaction.energies, interaction.positions
         if remainder is not None:
             written["interaction"] = str(save_figure(plot_interaction_remainder(energies, positions, remainder), out_root / _figure_name("interaction_remainder", run_id=run_id, generation=generation, mode=None)))
+    if resonance is not None and isinstance(resonance, dict) and "metadata" in resonance:
+        for mode_name, payload in resonance["metadata"].get("modes", {}).items():
+            by_pos = payload["summary"]["by_position"]
+            positions = np.array([r["position"] for r in by_pos], dtype=float)
+            shifts = np.array([r["mean_abs_delta_E"] for r in by_pos], dtype=float)
+            written[f"resonance_{mode_name}"] = str(save_figure(plot_resonance_shifts(positions, shifts), out_root / _figure_name("resonance_shifts", run_id=run_id, generation=generation, mode=mode_name)))
     if resonance is not None and isinstance(resonance, dict) and "summary" in resonance:
         by_pos = resonance["summary"]["by_position"]
         positions = np.array([row["position"] for row in by_pos], dtype=np.float64)

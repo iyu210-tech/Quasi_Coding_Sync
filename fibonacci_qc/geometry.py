@@ -220,8 +220,8 @@ class FibonacciGeometry:
             "fibonacci_number": fibonacci_number(self.generation),
             "n_phason_valid": int(np.count_nonzero(self.phason_valid)),
             "n_phason_invalid": int(self.n_bonds - np.count_nonzero(self.phason_valid)),
-            "site_motif_families": tuple(self.site_motifs),
-            "bond_motif_families": tuple(self.bond_motifs),
+            "site_motif_families": list(self.site_motifs),
+            "bond_motif_families": list(self.bond_motifs),
         }
 
 

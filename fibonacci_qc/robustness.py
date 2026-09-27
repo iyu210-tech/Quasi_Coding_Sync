@@ -2,36 +2,39 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, Optional, Sequence, Tuple
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import numpy as np
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.fast_solver import fast_sweep
-from fibonacci_qc.geometry import FibonacciGeometry, build_geometry
-from fibonacci_qc.parity_analysis import (integrate_contrast_windows, parity_contrast, position_parity, position_valid_mask,)
-from fibonacci_qc.resonance import (detect_peaks, match_peaks_order_preserving, track_resonances,)
-from fibonacci_qc.scattering import clean_transmission_grid
+from fibonacci_qc.geometry import build_geometry
+from fibonacci_qc.parity_analysis import integrate_contrast_windows, parity_contrast, position_parity, position_valid_mask, summarize_delta_t_windows
+from fibonacci_qc.resonance import detect_peaks, match_peaks_order_preserving, track_resonances
+from fibonacci_qc.scattering import trusted_transmission_mask
+from fibonacci_qc.interaction import interaction_from_sweeps, interaction_summary
 
-# Finer grid used
-ROBUSTNESS_N_ENERGY = 2 * cfg.N_ENERGY -1
-ROBUSTNESS_PASS_MAX_ABS_D = 1e-3
-ROBUSTNESS_PASS_RMSE_D = 1e-3
+ROBUSTNESS_N_ENERGY = 2*cfg.N_ENERGY-1
+ROBUSTNESS_PASS_MAX_ABS_D = cfg.GATE_TOLERANCES["parity_pointwise"]
+ROBUSTNESS_PASS_RMSE_D = ROBUSTNESS_PASS_MAX_ABS_D
 ROBUSTNESS_INDETERMINATE_MAX_ABS_D = 1e-2
 ROBUSTNESS_INDETERMINATE_RMSE_D = 1e-2
 
 @dataclass(frozen=True)
 class ContrastRobustness:
-    "Baseline vs new parity-contrast comparison"
     max_abs_D: float
     rmse_D: float
-    integrated_baseline: Dict[str, Dict[str, float]]
-    integrated_fine: Dict[str, Dict[str, float]]
-    integrated_abs_diff: Dict[str, Dict[str, float]]
+    integrated_baseline: dict
+    integrated_fine: dict
+    integrated_abs_diff: dict
+    max_abs_new_nodes: float = float("nan")
+    rmse_new_nodes: float = float("nan")
+    numerical_complete: bool = False
+    window_coverage: dict = field(default_factory=dict)
 
 @dataclass(frozen=True)
 class ResonanceRobustness:
-    "Baseline vs new resonance comparison for a position"
     position: int
     n_peaks_baseline: int
     n_peaks_fine: int
@@ -41,260 +44,233 @@ class ResonanceRobustness:
     mean_abs_delta_E_baseline: float
     mean_abs_delta_E_fine: float
     delta_E_summary_diff: float
+    gate: str = "unresolved"
+    reason: str = ""
+    n_clean_baseline: int = 0
+    n_clean_fine: int = 0
+    max_clean_peak_shift: float = float("nan")
+    max_individual_shift_change: float = float("nan")
 
-def classify_contrast_robustness(contrast:ContrastRobustness) -> str:
-    "Return pass, indeterminate, or fail"
-    if not (np.isfinite(contrast.max_abs_D) and np.isfinite(contrast.rmse_D)):
-        return "indeterminate"
-    if contrast.max_abs_D <= ROBUSTNESS_PASS_MAX_ABS_D and contrast.rmse_D <= ROBUSTNESS_PASS_RMSE_D:
-        return "pass"
-    if contrast.max_abs_D <= ROBUSTNESS_INDETERMINATE_MAX_ABS_D and contrast.rmse_D <= ROBUSTNESS_INDETERMINATE_RMSE_D:
-        return "indeterminate"
-    return "fail"
+def worst_gate(gates):
+    values = list(gates)
+    for gate in ("fail","unresolved","indeterminate"):
+        if gate in values: return gate
+    return "pass" if "pass" in values else "not_applicable"
 
-def finer_energy_grid(
-    e_min: float = cfg.E_MIN_EV,
-    e_max: float = cfg.E_MAX_EV,
-    n_points: int = ROBUSTNESS_N_ENERGY,
-) -> np.ndarray:
-    "Inclusive denser linear energy grid"
-    return cfg.energy_grid(e_min, e_max, n_points)
+def finer_energy_grid(e_min=cfg.E_MIN_EV, e_max=cfg.E_MAX_EV, n_points=ROBUSTNESS_N_ENERGY):
+    return cfg.energy_grid(e_min,e_max,n_points)
 
-def offset_energy_grid(
-    e_min: float = cfg.E_MIN_EV,
-    e_max: float = cfg.E_MAX_EV,
-    n_points: int = cfg.N_ENERGY,
-) -> np.ndarray:
-    if n_points < 2:
-        raise ValueError("n_points must be >= 2")
-    de = (e_max - e_min) / (n_points - 1)
-    half = 0.5 * de
-    # keep values inside [e_min, e_max]
-    return np.linspace(e_min + half, e_max - half, n_points, dtype=np.float64)
+def nested_fine_grid(energies):
+    e = np.asarray(energies,dtype=float)
+    if e.ndim != 1 or e.size < 2 or not np.all(np.diff(e)>0):
+        raise ValueError("strictly increasing baseline with >=2 points required")
+    out = np.empty(2*e.size-1);out[::2]=e;out[1::2]=e[:-1]+np.diff(e)/2
+    if not np.all(np.diff(out)>0): raise ValueError("grid cannot be bisected at float64 precision")
+    return out
 
-def adaptive_energy_grid_near_peaks(
-    baseline_energies: np.ndarray,
-    peak_energies: Sequence[float],
-    *,
-    half_window_ev: float,
-    n_per_window: int = 21,
-) -> np.ndarray:
-    "Local grids around peaks"
-    base = np.asarray(baseline_energies, dtype=np.float64)
-    segments = [base]
-    for e_pk in peak_energies:
-        lo = max(float(base[0]), float(e_pk) - half_window_ev)
-        hi = min(float(base[-1]), float(e_pk) + half_window_ev)
-        if hi <= lo:
-            continue
-        segments.append(np.linspace(lo, hi, n_per_window, dtype=np.float64))
-    merged = np.unique(np.concatenate(segments))
-    return merged
+def offset_energy_grid(e_min=cfg.E_MIN_EV,e_max=cfg.E_MAX_EV,n_points=cfg.N_ENERGY):
+    base = cfg.energy_grid(e_min,e_max,n_points)
+    return base[:-1]+np.diff(base)/2
 
-def interpolate_to_grid(
-    values: np.ndarray,
-    from_energies: np.ndarray,
-    to_energies: np.ndarray,
-) -> np.ndarray:
-    "Linear interpolation of 1D curve onto to_energies; prefer nested 2M-1 comparisons, offset grids as missed-peak checks"
-    return np.interp(np.asarray(to_energies, dtype=np.float64), np.asarray(from_energies, dtype=np.float64), np.asarray(values, dtype=np.float64),)
+def adaptive_energy_grid_near_peaks(baseline_energies,peak_energies,*,half_window_ev,n_per_window=21):
+    e=np.asarray(baseline_energies,dtype=float)
+    if half_window_ev <= 0 or n_per_window<3: raise ValueError("positive window and >=3 points required")
+    return np.unique(np.concatenate([e]+[np.linspace(max(e[0],p-half_window_ev),min(e[-1],p+half_window_ev),n_per_window) for p in peak_energies]))
 
-def compare_parity_contrast(
-    d_baseline: np.ndarray,
-    energies_baseline: np.ndarray,
-    d_fine: np.ndarray,
-    energies_fine: np.ndarray,
-) -> ContrastRobustness:
-    "Compare D(E) and integrated measures"
-    d_fine_on_base = interpolate_to_grid(d_fine, energies_fine, energies_baseline)
-    diff = d_fine_on_base - np.asarray(d_baseline, dtype=np.float64)
-    finite = np.isfinite(diff)
-    if not np.any(finite):
-        max_abs = float("nan")
-        rmse = float("nan")
+def interpolate_to_grid(values,from_energies,to_energies):
+    return np.interp(np.asarray(to_energies,dtype=float),np.asarray(from_energies,dtype=float),np.asarray(values,dtype=float))
+
+def _error(values):
+    x=np.asarray(values,dtype=float)
+    if not x.size or not np.all(np.isfinite(x)): return float("nan"),float("nan")
+    return float(np.max(np.abs(x))),float(np.sqrt(np.mean(x*x)))
+
+def compare_parity_contrast(d_baseline,energies_baseline,d_fine,energies_fine):
+    db,eb,df,ef=map(lambda x:np.asarray(x,dtype=float),(d_baseline,energies_baseline,d_fine,energies_fine))
+    old_max,old_rms=_error(interpolate_to_grid(df,ef,eb)-db)
+    new_max,new_rms=_error(df-interpolate_to_grid(db,eb,ef))
+    bm,fm=integrate_contrast_windows(db,eb),integrate_contrast_windows(df,ef)
+    b={w:{k:getattr(v,k) for k in ("signed","abs","rms")} for w,v in bm.items()}
+    f={w:{k:getattr(v,k) for k in ("signed","abs","rms")} for w,v in fm.items()}
+    dif={w:{k:abs(f[w][k]-b[w][k]) for k in b[w]} for w in b}
+    cov={w: min(bm[w].coverage,fm[w].coverage) for w in bm}
+    same_span=bool(eb[0]==ef[0] and eb[-1]==ef[-1])
+    return ContrastRobustness(old_max,old_rms,b,f,dif,new_max,new_rms, bool(np.all(np.isfinite(db)) and np.all(np.isfinite(df)) and same_span),cov)
+
+def classify_contrast_robustness(contrast):
+    if not contrast.numerical_complete: return "unresolved"
+    if not np.isfinite(contrast.max_abs_new_nodes) or not np.isfinite(contrast.rmse_new_nodes): return "unresolved"
+    gates=[]
+    gates.append("pass" if max(contrast.max_abs_new_nodes,contrast.rmse_new_nodes)<=cfg.GATE_TOLERANCES["parity_pointwise"] else "fail")
+    for window,values in contrast.integrated_abs_diff.items():
+        if contrast.window_coverage.get(window,0)<1-1e-12 or not all(np.isfinite(x) for x in values.values()):
+            gates.append("unresolved");continue
+        for key,delta in values.items():
+            tol=cfg.GATE_TOLERANCES["parity_rms" if key=="rms" else "parity_integral_ev"]
+            gates.append("pass" if delta<=tol else "fail")
+    return worst_gate(gates)
+
+def compare_resonance_spectra(spectrum_baseline,energies_baseline,spectrum_fine,energies_fine,*,
+        t_clean_baseline,t_clean_fine,position,mode="robustness",parity=0,
+        clean_peaks_baseline=None,clean_peaks_fine=None):
+    sb,sf,cb,cf=map(lambda x:np.asarray(x,dtype=float),(spectrum_baseline,spectrum_fine,t_clean_baseline,t_clean_fine))
+    empty=ResonanceRobustness(position,0,0,0,np.nan,np.nan,np.nan,np.nan,np.nan, gate="unresolved",reason="untrusted or nonfinite spectrum")
+    if not all(np.all(np.isfinite(x)) for x in (sb,sf,cb,cf)): return empty
+    pb,pf=detect_peaks(sb,energies_baseline),detect_peaks(sf,energies_fine)
+    qb=detect_peaks(cb,energies_baseline) if clean_peaks_baseline is None else clean_peaks_baseline
+    qf=detect_peaks(cf,energies_fine) if clean_peaks_fine is None else clean_peaks_fine
+    tol=cfg.GATE_TOLERANCES["peak_energy_ev"]
+    dm=match_peaks_order_preserving(pb,pf,max_delta_e=tol)
+    cm=match_peaks_order_preserving(qb,qf,max_delta_e=tol)
+    maxdef=max((abs(m.delta_E) for m in dm.matched),default=float("nan"))
+    meandef=float(np.mean([abs(m.delta_E) for m in dm.matched])) if dm.matched else float("nan")
+    maxclean=max((abs(m.delta_E) for m in cm.matched),default=float("nan"))
+    tb=track_resonances(cb,sb,energies_baseline,mode=mode,position=position,parity=parity,clean_peaks=qb)
+    tf=track_resonances(cf,sf,energies_fine,mode=mode,position=position,parity=parity,clean_peaks=qf)
+    diff=abs(tf.mean_abs_delta_E-tb.mean_abs_delta_E) if tb.match.n_matched and tf.match.n_matched else np.nan
+    gate,reason="pass","peak identities and shifts agree on sampled grids"
+    individual=np.nan
+    if len(pb)!=len(pf) or dm.n_matched!=len(pb) or len(qb)!=len(qf) or cm.n_matched!=len(qb):
+        gate,reason="fail","clean or defect peaks changed count/location under refinement"
     else:
-        max_abs = float(np.nanmax(np.abs(diff)))
-        rmse = float(np.sqrt(np.nanmean(diff[finite] ** 2)))
-    base_int = integrate_contrast_windows(d_baseline, energies_baseline)
-    fine_int = integrate_contrast_windows(d_fine, energies_fine)
-    integrated_baseline = {
-        name: {"signed": m.signed, "abs": m.abs, "rms": m.rms}
-        for name, m in base_int.items()
-    }
-    integrated_fine = {
-        name: {"signed": m.signed, "abs": m.abs, "rms": m.rms}
-        for name, m in fine_int.items()
-    }
-    integrated_abs_diff = {
-        name: {
-            key: abs(integrated_fine[name][key] - integrated_baseline[name][key])
-            for key in ("signed", "abs", "rms")
-        }
-        for name in integrated_baseline
-    }
-    return ContrastRobustness(
-        max_abs_D=max_abs,
-        rmse_D=rmse,
-        integrated_baseline=integrated_baseline,
-        integrated_fine=integrated_fine,
-        integrated_abs_diff=integrated_abs_diff,
-    )
+        dmap={m.clean_index:m.defect_index for m in dm.matched}
+        cmap={m.clean_index:m.defect_index for m in cm.matched}
+        expected={(cmap[m.clean_index],dmap[m.defect_index]):m for m in tb.match.matched}
+        actual={(m.clean_index,m.defect_index):m for m in tf.match.matched}
+        if set(expected)!=set(actual):
+            gate,reason="fail","clean-defect pairing changes across numerical grids"
+        elif not expected:
+            gate,reason="not_applicable","stable absence of admissible clean-defect matches; no shift estimate"
+        else:
+            individual=max(abs(actual[k].delta_E-v.delta_E) for k,v in expected.items())
+            if max(individual,diff)>cfg.GATE_TOLERANCES["peak_shift_ev"]:
+                gate,reason="fail","finite matched shifts have not converged"
+    return ResonanceRobustness(position,len(pb),len(pf),dm.n_matched,meandef,maxdef, tb.mean_abs_delta_E,tf.mean_abs_delta_E,float(diff),gate,reason,len(qb),len(qf),maxclean,float(individual))
 
-def compare_resonance_spectra(
-    spectrum_baseline: np.ndarray,
-    energies_baseline: np.ndarray,
-    spectrum_fine: np.ndarray,
-    energies_fine: np.ndarray,
-    *,
-    t_clean_baseline: np.ndarray,
-    t_clean_fine: np.ndarray,
-    position: int,
-    mode: str = "robustness",
-    parity: int = 0,
-) -> ResonanceRobustness:
-    "Compare peak locations and matched ΔE"
-    peaks_base = detect_peaks(spectrum_baseline, energies_baseline)
-    peaks_fine = detect_peaks(spectrum_fine, energies_fine)
-    peak_match = match_peaks_order_preserving(peaks_base, peaks_fine)
-    if peak_match.matched:
-        shifts = [abs(m.delta_E) for m in peak_match.matched]
-        mean_shift = float(np.mean(shifts))
-        max_shift = float(np.max(shifts))
-    else:
-        mean_shift = float("nan")
-        max_shift = float("nan")
-    track_base = track_resonances(
-        t_clean_baseline,
-        spectrum_baseline,
-        energies_baseline,
+def compare_endpoint_summaries(baseline,fine,*,kind):
+    "Gate only estimands"
+    changes={};gates=[]
+    metrics=("mean_abs","rms") if kind=="response" else ("mean_abs_I","rms_I","mean_abs_I_log","rms_I_log")
+    for window in baseline:
+        b=asdict(baseline[window]) if hasattr(baseline[window],"__dataclass_fields__") else baseline[window]
+        f=asdict(fine[window]) if hasattr(fine[window],"__dataclass_fields__") else fine[window]
+        changes[window]={}
+        coverage_keys=("coverage",) if kind=="response" else ("coverage_I","coverage_I_log")
+        if any(not np.isfinite(item.get(k,np.nan)) or item.get(k,0)<cfg.MIN_NUMERICAL_COVERAGE for item in (b,f) for k in coverage_keys):
+            gates.append("unresolved")
+        for key in metrics:
+            a,z=b.get(key,np.nan),f.get(key,np.nan)
+            if not(np.isfinite(a) and np.isfinite(z)):
+                changes[window][key]=np.nan;gates.append("unresolved");continue
+            diff=abs(a-z);changes[window][key]=float(diff)
+            if key.endswith("_log"):
+                tol=cfg.GATE_TOLERANCES["interaction_log_atol"]+cfg.GATE_TOLERANCES["interaction_log_rtol"]*max(abs(a),abs(z))
+            else:tol=cfg.GATE_TOLERANCES[kind]
+            gates.append("pass" if diff<=tol else "fail")
+    return {"gate":worst_gate(gates),"differences":changes}
+
+def classify_robustness(contrast,resonance_rows,*,response_gate="unresolved",numerical_gate="pass"):
+    return worst_gate([classify_contrast_robustness(contrast),response_gate,numerical_gate]+[r.gate for r in resonance_rows])
+
+def _trusted_sweep(sweep):
+    cell=trusted_transmission_mask(sweep["status"],sweep["T"],sweep["log_T"])
+    clean=trusted_transmission_mask(sweep["clean_status"],sweep["T_clean"],sweep["log_T_clean"])
+    return cell,clean
+
+def robustness_check_mode(geometry,mode,*,energies_baseline=None,energies_fine=None,positions=None,
+                          baseline_sweep=None,fine_sweep=None):
+    eb=np.asarray(cfg.energy_grid() if energies_baseline is None else energies_baseline,dtype=float)
+    ef=nested_fine_grid(eb) if energies_fine is None else np.asarray(energies_fine,dtype=float)
+    if ef.size<=eb.size or ef[0]!=eb[0] or ef[-1]!=eb[-1]:
+        raise ValueError("fine grid must add samples over the identical energy span")
+    b=fast_sweep(mode,eb,geometry=geometry) if baseline_sweep is None else baseline_sweep
+    f=fast_sweep(mode,ef,geometry=geometry) if fine_sweep is None else fine_sweep
+    if not np.array_equal(b["energies"],eb) or not np.array_equal(f["energies"],ef):
+        raise ValueError("robustness sweep coordinates do not match supplied grids")
+    if not np.array_equal(b["valid"],f["valid"]): raise ValueError("geometric validity changes between grids")
+    valid=position_valid_mask(geometry,mode,sweep_valid=b["valid"]);parity=position_parity(geometry,mode)
+    bc,bclean=_trusted_sweep(b);fc,fclean=_trusted_sweep(f)
+    db=parity_contrast(b["T"],parity,valid,energies=eb,cell_valid=bc).D
+    df=parity_contrast(f["T"],parity,valid,energies=ef,cell_valid=fc).D
+    complete=bool(np.all(bc[valid]) and np.all(fc[valid]) and np.all(bclean) and np.all(fclean))
+    contrast=compare_parity_contrast(db,eb,df,ef)
+    rb=summarize_delta_t_windows(np.asarray(b["T"])-b["T_clean"],eb,valid,cell_valid=bc & bclean)
+    rf=summarize_delta_t_windows(np.asarray(f["T"])-f["T_clean"],ef,valid,cell_valid=fc & fclean)
+    rc=compare_endpoint_summaries(rb,rf,kind="response")
+    pb=detect_peaks(b["T_clean"],eb) if np.all(bclean) else []
+    pf=detect_peaks(f["T_clean"],ef) if np.all(fclean) else []
+    pos=np.flatnonzero(valid) if positions is None else np.asarray(positions,dtype=int)
+    rows=[]
+    for p in pos:
+        if p<0 or p>=len(valid): raise ValueError("robustness position out of range")
+        if not valid[p]:continue
+        rows.append(compare_resonance_spectra(np.where(bc[p],b["T"][p],np.nan),eb,
+            np.where(fc[p],f["T"][p],np.nan),ef,t_clean_baseline=np.where(bclean,b["T_clean"],np.nan),
+            t_clean_fine=np.where(fclean,f["T_clean"],np.nan),position=int(p),mode=mode,parity=int(parity[p]),
+            clean_peaks_baseline=pb,clean_peaks_fine=pf))
+    full_positions=set(int(p) for p in pos if valid[p])==set(np.flatnonzero(valid))
+    numerical="pass" if complete else "unresolved"
+    gate=classify_robustness(contrast,rows,response_gate=rc["gate"],numerical_gate=numerical)
+    if not full_positions:gate=worst_gate([gate,"unresolved"])
+    return dict(
         mode=mode,
-        position=position,
-        parity=parity,
-    )
-    track_fine = track_resonances(
-        t_clean_fine,
-        spectrum_fine,
-        energies_fine,
-        mode=mode,
-        position=position,
-        parity=parity,
-    )
-    base_abs = track_base.mean_abs_delta_E
-    fine_abs = track_fine.mean_abs_delta_E
-    if np.isfinite(base_abs) and np.isfinite(fine_abs):
-        summary_diff = abs(fine_abs - base_abs)
-    else:
-        summary_diff = float("nan")
-    return ResonanceRobustness(
-        position=position,
-        n_peaks_baseline=len(peaks_base),
-        n_peaks_fine=len(peaks_fine),
-        n_matched=peak_match.n_matched,
-        mean_abs_peak_shift=mean_shift,
-        max_abs_peak_shift=max_shift,
-        mean_abs_delta_E_baseline=base_abs,
-        mean_abs_delta_E_fine=fine_abs,
-        delta_E_summary_diff=summary_diff,
-    )
+        generation=geometry.generation,
+        n_energy_baseline=len(eb),
+        n_energy_fine=len(ef),
+        contrast=contrast,
+        resonance=rows,
+        D_baseline=db,
+        D_fine=df,
+        energies_baseline=eb,
+        energies_fine=ef,
+        contrast_gate=classify_contrast_robustness(contrast),
+        primary_gate=gate,
+        numerical_gate=numerical,
+        response_baseline={w:asdict(v) for w,v in rb.items()},
+        response_fine={w:asdict(v) for w,v in rf.items()},
+        response_comparison=rc,
+        all_valid_resonance_positions=full_positions,
+        workflow="actual baseline -> nested midpoint refinement -> parity, response, peak identities/shifts")
 
-def robustness_check_mode(
-    geometry: FibonacciGeometry,
-    mode: str,
-    *,
-    energies_baseline: Optional[np.ndarray] = None,
-    energies_fine: Optional[np.ndarray] = None,
-    positions: Optional[Sequence[int]] = None,
-) -> Dict[str, object]:
-    "Full check for a defect mode on one generation."
-    e_base = (
-        np.asarray(energies_baseline, dtype=np.float64)
-        if energies_baseline is not None
-        else cfg.energy_grid()
-    )
-    e_fine = (
-        np.asarray(energies_fine, dtype=np.float64)
-        if energies_fine is not None
-        else finer_energy_grid()
-    )
-    sweep_base = fast_sweep(mode, e_base, geometry=geometry)
-    sweep_fine = fast_sweep(mode, e_fine, geometry=geometry)
-    t_clean_base, _, _ = clean_transmission_grid(
-        geometry.generation, e_base, geometry=geometry
-    )
-    t_clean_fine, _, _ = clean_transmission_grid(
-        geometry.generation, e_fine, geometry=geometry
-    )
-    parity = position_parity(geometry, mode)
-    valid = position_valid_mask(
-        geometry, mode, sweep_valid=np.asarray(sweep_base["valid"], dtype=bool)
-    )
-    d_base = parity_contrast(
-        sweep_base["T"], parity, valid, energies=e_base
-    ).D
-    d_fine = parity_contrast(
-        sweep_fine["T"],
-        parity,
-        position_valid_mask(
-            geometry, mode, sweep_valid=np.asarray(sweep_fine["valid"], dtype=bool)
-        ),
-        energies=e_fine,
-    ).D
-    contrast = compare_parity_contrast(d_base, e_base, d_fine, e_fine)
-    n_pos = sweep_base["T"].shape[0]
-    if positions is None:
-        pos_list = tuple(int(p) for p in np.flatnonzero(valid))
-    else:
-        pos_list = tuple(int(p) for p in positions)
-    resonance_rows = []
-    for p in pos_list:
-        if not valid[p]:
-            continue
-        resonance_rows.append(
-            compare_resonance_spectra(
-                sweep_base["T"][p],
-                e_base,
-                sweep_fine["T"][p],
-                e_fine,
-                t_clean_baseline=t_clean_base,
-                t_clean_fine=t_clean_fine,
-                position=p,
-                mode=mode,
-                parity=int(parity[p]),
-            )
-        )
-    return {
-        "mode": mode,
-        "generation": geometry.generation,
-        "n_energy_baseline": int(e_base.size),
-        "n_energy_fine": int(e_fine.size),
-        "contrast": contrast,
-        "resonance": resonance_rows,
-        "D_baseline": d_base,
-        "D_fine": d_fine,
-        "energies_baseline": e_base,
-        "energies_fine": e_fine,
-        "contrast_gate": classify_contrast_robustness(contrast),
-        "workflow": "pre-specified: nested fine grid -> parity D -> all valid resonance positions",
-    }
-
-def analyze_generation_robustness(
-    generation: int,
-    *,
-    geometry: Optional[FibonacciGeometry] = None,
-    modes: Optional[Sequence[str]] = None,
-    energies_baseline: Optional[np.ndarray] = None,
-    energies_fine: Optional[np.ndarray] = None,
-) -> Dict[str, object]:
-    "Robustness checks for the defect modes."
-    geom = geometry if geometry is not None else build_geometry(generation)
-    modes = list(modes or cfg.DEFECT_MODES)
-    mode_results = {
-        mode: robustness_check_mode(
-            geom,
-            mode,
-            energies_baseline=energies_baseline,
-            energies_fine=energies_fine,
-        )
-        for mode in modes
-    }
-    return {"generation": geom.generation, "modes": mode_results, "geometry_metadata": geom.to_metadata(),}
+def analyze_generation_robustness(generation,*,geometry=None,modes=None,energies_baseline=None, energies_fine=None,baseline_bundle=None):
+    geom=build_geometry(generation) if geometry is None else geometry
+    wanted=list(cfg.DEFECT_MODES if modes is None else modes)
+    eb=np.asarray(baseline_bundle["energies"] if baseline_bundle is not None else (cfg.energy_grid() if energies_baseline is None else energies_baseline),dtype=float)
+    if energies_baseline is not None and not np.array_equal(eb,energies_baseline):
+        raise ValueError("saved baseline differs from requested robustness grid")
+    ef=nested_fine_grid(eb) if energies_fine is None else np.asarray(energies_fine,dtype=float)
+    results={};base={};fine={}
+    with TemporaryDirectory(prefix="fibonacci_robustness_") as tmp:
+        for mode in wanted:
+            if baseline_bundle is None:
+                base[mode]=fast_sweep(mode,eb,geometry=geom,spill_dir=Path(tmp)/"base"/mode)
+            else:
+                original=baseline_bundle["modes"][mode]
+                base[mode]={
+                    **original,
+                    "T_clean":baseline_bundle["T_clean"],
+                    "log_T_clean":baseline_bundle["log_T_clean"],
+                    "clean_status":baseline_bundle["clean_status"],
+                    "energies":eb
+                }
+            fine[mode]=fast_sweep(mode,ef,geometry=geom,spill_dir=Path(tmp)/"fine"/mode)
+            results[mode]=robustness_check_mode(geom,mode,energies_baseline=eb,energies_fine=ef, baseline_sweep=base[mode],fine_sweep=fine[mode])
+        interaction_gate="not_applicable";interaction={}
+        if all(m in wanted for m in cfg.ONE_SITE_MODES):
+            summaries=[]
+            for sweeps,energies in ((base,eb),(fine,ef)):
+                first=next(iter(sweeps.values()))
+                rem=interaction_from_sweeps(sweeps,t_clean=first["T_clean"],log_t_clean=first["log_T_clean"],
+                    status_clean=first["clean_status"],energies=energies)
+                summaries.append(interaction_summary(rem));del rem
+            comparison=compare_endpoint_summaries(*summaries,kind="interaction")
+            interaction_gate=comparison["gate"]
+            interaction=dict(baseline=summaries[0],fine=summaries[1],**comparison)
+        primary=worst_gate([v["primary_gate"] for v in results.values()]+[interaction_gate])
+    return dict(generation=geom.generation,
+                modes=results,
+                geometry_metadata=geom.to_metadata(),
+                interaction=interaction,
+                interaction_gate=interaction_gate,
+                primary_gate=primary,
+                gate_tolerances=dict(cfg.GATE_TOLERANCES))

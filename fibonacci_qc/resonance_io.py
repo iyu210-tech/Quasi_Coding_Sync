@@ -132,13 +132,21 @@ def save_resonance_analysis(
         np_payload[prefix + "valid"] = valid
         np_payload[prefix + "positions"] = positions
         np_payload[prefix + "n_positions"] = np.array(n_pos, dtype=np.int64)
-        json_modes[mode] = {"summary": payload["summary"]}
+        json_modes[mode] = {
+            "summary": payload["summary"],
+            "clean_peaks": [_peak_to_dict(p) for p in payload["clean_peaks"]],
+            "tracks": [{k:v for k,v in _track_to_dict(t).items() if k != "clean_peaks"} for t in tracks],
+        }
 
     np.savez_compressed(out, **np_payload)
     meta = {
         "npz": out.name,
         "generation": generation,
         "geometry_metadata": analysis.get("geometry_metadata"),
+        "tracking_scope": "within_generation_clean_versus_defect",
+        "cross_generation_identity": False,
+        "numerical_failure": bool(analysis.get("numerical_failure", False)),
+        "match_gate_max_delta_e_ev": analysis.get("match_gate_max_delta_e_ev"),
         "modes": json_modes,
         "run_metadata": metadata or {},
     }
@@ -159,68 +167,11 @@ def load_resonance_analysis(path: PathLike) -> Dict[str, object]:
         arrays = {key: data[key] for key in data.files}
     return {"arrays": arrays, "metadata": meta}
 
-def analyze_raw_interaction_and_resonance(
-    raw_path: PathLike,
-    *,
-    modes: Optional[Sequence[str]] = None,
-    save_dir: Optional[PathLike] = None,
-    source_raw_dir: Optional[str] = None,
-) -> Dict[str, object]:
-    "Run interaction + resonance analysis on one generation's raw files."
-    run_meta = {"source_raw_dir": source_raw_dir} if source_raw_dir is not None else None
-    raw = load_generation_raw(raw_path)
-    generation = int(raw["generation"])
-    geom = build_geometry(generation)
-
-    # Interaction needs the three one-site modes
-    modes_dict: Dict[str, Dict[str, np.ndarray]] = dict(raw["modes"])
-    parent = Path(raw_path).parent
-    requested = list(modes or cfg.DEFECT_MODES)
-    bundle = load_generation_bundle(parent, modes=requested, require_modes=requested)
-    modes_dict = bundle["modes"]
-    for mode in (cfg.MODE_SUBSTITUTION, cfg.MODE_POTENTIAL_ONLY, cfg.MODE_WIDTH_ONLY,):
-        if mode in modes_dict:
-            continue
-        sibling = parent / f"{mode}.npz"
-        if sibling.exists():
-            sibling_raw = load_generation_raw(sibling)
-            modes_dict[mode] = sibling_raw["modes"][mode]
-    result: Dict[str, object] = {"generation": generation, "interaction": None, "resonance": None,}
-    have_interaction = all(
-        m in modes_dict
-        for m in (cfg.MODE_SUBSTITUTION, cfg.MODE_POTENTIAL_ONLY, cfg.MODE_WIDTH_ONLY,)
-    )
-    if have_interaction:
-        remainder = interaction_from_sweeps(
-            modes_dict,
-            t_clean=raw["T_clean"],
-            log_t_clean=raw["log_T_clean"],
-            energies=raw["energies"],
-        )
-        result["interaction"] = remainder
-        if save_dir is not None:
-            save_interaction_remainder(
-                remainder,
-                Path(save_dir) / f"n{generation:02d}" / "interaction.npz",
-                generation=generation,
-                metadata=run_meta
-            )
-    resonance = analyze_generation_resonances(
-        {
-            "generation": generation,
-            "energies": raw["energies"],
-            "T_clean": raw["T_clean"],
-            "modes": modes_dict if modes is None else {
-                m: modes_dict[m] for m in modes if m in modes_dict
-            },
-        },
-        geom,
-        modes=modes,
-    )
-    result["resonance"]=resonance
-    if save_dir is not None:
-        save_resonance_analysis(resonance, Path(save_dir) / f"n{generation:02d}" / "resonance.npz", metadata=run_meta)
-    return result
+def analyze_raw_interaction_and_resonance(raw_path, *, modes=None, save_dir=None, source_raw_dir=None):
+    path = Path(raw_path)
+    if not path.is_absolute() and not path.exists(): path = cfg.OUTPUT_RAW/path
+    bundle = load_generation_bundle(path.parent, modes=modes)
+    return analyze_raw_interaction_and_resonance_from_bundle(bundle, modes=modes, save_dir=save_dir, source_raw_dir=source_raw_dir)
 
 def analyze_raw_interaction_and_resonance_from_bundle(
     bundle: Dict[str, object],
@@ -248,6 +199,7 @@ def analyze_raw_interaction_and_resonance_from_bundle(
             t_clean=bundle["T_clean"],
             log_t_clean=bundle["log_T_clean"],
             energies=bundle["energies"],
+            status_clean=bundle["clean_status"],
         )
         result["interaction"] = remainder
         if save_dir is not None:
@@ -257,6 +209,8 @@ def analyze_raw_interaction_and_resonance_from_bundle(
             "generation": generation,
             "energies": bundle["energies"],
             "T_clean": bundle["T_clean"],
+            "log_T_clean": bundle["log_T_clean"],
+            "clean_status": bundle["clean_status"],
             "modes": modes_dict,
         },
         geom,
@@ -295,7 +249,7 @@ def produce_resonance_analysis(
         gen_dir = raw_root / f"n{generation:02d}"
         raw_files = sorted(gen_dir.glob("*.npz"))
         if not raw_files:
-            continue
+            raise FileNotFoundError(f"missing requested generation: {gen_dir}")
 
         bundle = load_generation_bundle(
             gen_dir,

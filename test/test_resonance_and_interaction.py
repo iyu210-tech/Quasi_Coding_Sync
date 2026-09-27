@@ -120,7 +120,7 @@ def test_match_prefers_more_matches_over_smaller_displacement():
         Peak(1, 2.5, 1.0, 0.1),
         Peak(2, 4.5, 1.0, 0.1),
     ]
-    result = match_peaks_order_preserving(clean, defect)
+    result = match_peaks_order_preserving(clean, defect, max_delta_e=1.0)
     assert result.n_matched == 3
     assert result.total_displacement == pytest.approx(1.5)
 
@@ -137,7 +137,7 @@ def test_track_resonances_reports_delta_e():
     energies = np.linspace(0.0, 5.0, 51)
     clean = np.exp(-((energies - 2.0) ** 2) / 0.05)
     defect = np.exp(-((energies - 2.3) ** 2) / 0.05)
-    track = track_resonances(clean, defect, energies, mode="substitution", position=0, parity=0)
+    track = track_resonances(clean, defect, energies, mode="substitution", position=0, parity=0, max_delta_e=1.0)
     assert track.valid
     assert track.match.n_matched >= 1
     assert track.mean_delta_E == pytest.approx(0.3, abs=0.15)

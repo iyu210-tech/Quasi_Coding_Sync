@@ -1,161 +1,24 @@
 {
   "name": "regression_n04_substitution",
-  "params": {
+  "method": "independent mpmath characteristic matrices",
+  "precision_checks": [
+    80,
+    120
+  ],
+  "parameters": {
     "generation": 4,
     "mode": "substitution",
-    "n_energy": 8
+    "energies": [
+      0.5,
+      0.7857142857142857,
+      1.0714285714285714,
+      1.3571428571428572,
+      1.6428571428571428,
+      1.9285714285714284,
+      2.2142857142857144,
+      2.5
+    ]
   },
-  "metadata": {
-    "created_utc": "2026-09-26T16:59:42.487660+00:00",
-    "generations": [
-      4
-    ],
-    "n_energy": 8,
-    "energy_min_ev": 0.5,
-    "energy_max_ev": 2.5,
-    "defect_modes": [
-      "substitution",
-      "phason",
-      "potential_only",
-      "width_only"
-    ],
-    "config": {
-      "length_unit": "nm",
-      "energy_unit": "eV",
-      "hbar2_over_2m_ev_nm2": 0.03809982106299684,
-      "v_lead_ev": 0.0,
-      "d_a_nm": 1.0,
-      "v_a_ev": 0.01,
-      "d_b_nm": 2.0,
-      "v_b_ev": 5.0,
-      "e_min_ev": 0.1,
-      "e_max_ev": 10.0,
-      "n_energy": 2000,
-      "n_generation_min": 10,
-      "n_generation_max": 20,
-      "generations": [
-        10,
-        11,
-        12,
-        13,
-        14,
-        15,
-        16,
-        17,
-        18,
-        19,
-        20
-      ],
-      "word_w1": "B",
-      "word_w2": "A",
-      "defect_modes": [
-        "substitution",
-        "phason",
-        "potential_only",
-        "width_only"
-      ],
-      "motif_families": [
-        "site_letter",
-        "site_3",
-        "site_5",
-        "bond_pair",
-        "bond_4",
-        "bond_6"
-      ],
-      "geometry_strata": [
-        "site_letter",
-        "site_3",
-        "site_5",
-        "bond_pair",
-        "bond_4"
-      ],
-      "permutation_replicates": 500,
-      "alpha_flat_threshold": 0.05,
-      "scaling_d_floor": 1e-12,
-      "scaling_min_usable_generations": 3,
-      "scaling_loo_alpha_tol": 0.05,
-      "scaling_rmse_max": 0.5,
-      "fit_generation_windows": [
-        [
-          10,
-          15
-        ],
-        [
-          10,
-          17
-        ],
-        [
-          10,
-          20
-        ]
-      ],
-      "energy_windows": {
-        "full": [
-          0.1,
-          10.0
-        ],
-        "low": [
-          0.1,
-          1.0
-        ],
-        "mid": [
-          1.0,
-          5.0
-        ],
-        "high": [
-          5.0,
-          10.0
-        ]
-      },
-      "tolerances": {
-        "t_bounds_atol": 1e-10,
-        "transmission_atol": 1e-12,
-        "transmission_rtol": 1e-09,
-        "solver_crosscheck_atol": 1e-10,
-        "solver_crosscheck_rtol": 1e-08,
-        "log_t_floor": -700.0,
-        "word_length_match": 0
-      },
-      "output_root": "/Users/ian/Desktop/VSCode/QuasicrystalCoding/output",
-      "layer_width_nm": {
-        "A": 1.0,
-        "B": 2.0
-      },
-      "layer_potential_ev": {
-        "A": 0.01,
-        "B": 5.0
-      },
-      "substitution": {
-        "A": "AB",
-        "B": "A"
-      },
-      "lead_left_token": "L",
-      "lead_right_token": "R",
-      "one_site_modes": [
-        "substitution",
-        "potential_only",
-        "width_only"
-      ],
-      "two_site_modes": [
-        "phason"
-      ],
-      "site_motif_radius": {
-        "site_letter": 0,
-        "site_3": 1,
-        "site_5": 2
-      },
-      "bond_motif_radius": {
-        "bond_pair": 0,
-        "bond_4": 1,
-        "bond_6": 2
-      }
-    },
-    "git": {
-      "commit": "34970c2f6a5fa48385eedf573fe47f6579e85a6c",
-      "branch": "main",
-      "dirty": "M README.md\n M fibonacci_qc/analysis_io.py\n M fibonacci_qc/config.py\n M fibonacci_qc/drivers.py\n M fibonacci_qc/fast_solver.py\n M fibonacci_qc/geometry.py\n M fibonacci_qc/interaction.py\n M fibonacci_qc/nulls_io.py\n M fibonacci_qc/parity_analysis.py\n M fibonacci_qc/pipeline.py\n M fibonacci_qc/plotting.py\n M fibonacci_qc/raw_data.py\n M fibonacci_qc/regression.py\n M fibonacci_qc/resonance_io.py\n M fibonacci_qc/scaling.py\n M fibonacci_qc/scaling_io.py\n M fibonacci_qc/scattering.py\n M pyproject.toml\n M test/test_config.py\n M test/test_fast_solver.py\n M test/test_final.py\n M test/test_geometry.py\n M test/test_scattering.py\n?? .github/\n?? fibonacci_qc/fixtures/\n?? requirements.lock"
-    },
-    "config_sha256": "aa54607b6474906c0fdc0a7f11e487e2d4854e3fe91d83dadf1f01846bab8c27",
-    "fixture": "regression_n04_substitution"
-  }
+  "hbar2_over_2m_ev_nm2": 0.03809982106299684,
+  "note": "Created independently"
 }

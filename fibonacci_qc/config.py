@@ -162,6 +162,8 @@ class SimulationConfig:
 
     def as_dict(self) -> Dict[str, object]:
         return {
+            "numerical_min_coverage": MIN_NUMERICAL_COVERAGE,
+            "gate_tolerances": dict(GATE_TOLERANCES),
             "length_unit": self.length_unit,
             "energy_unit": self.energy_unit,
             "hbar2_over_2m_ev_nm2": self.hbar2_over_2m_ev_nm2,
@@ -205,4 +207,11 @@ class SimulationConfig:
     def grid(self) -> np.ndarray:
         return energy_grid(self.e_min_ev, self.e_max_ev, self.n_energy)
 
+MIN_NUMERICAL_COVERAGE = 1.0
+GATE_TOLERANCES = MappingProxyType({
+    "parity_pointwise": 1e-3, "parity_integral_ev": 1e-3,
+    "parity_rms": 1e-3, "response": 1e-3, "interaction": 1e-3,
+    "interaction_log_atol": 1e-3, "interaction_log_rtol": 1e-3,
+    "peak_energy_ev": 1e-3, "peak_shift_ev": 1e-3,
+})
 CONFIG = SimulationConfig()

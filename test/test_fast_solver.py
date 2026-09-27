@@ -39,7 +39,7 @@ def test_fast_one_site_matches_reference(mode):
             ref = delta_t(mode, p, e, geometry=geom)
             assert ref.valid
             assert fast.T == pytest.approx(ref.T, rel=1e-10, abs=1e-12)
-            if np.isfinite(ref.T) and ref.log_T > cfg.TOLERANCES.log_t_floor:
+            if np.isfinite(ref.log_T):
                 assert fast.log_T == pytest.approx(ref.log_T, rel = 1e-8, abs = 1e-6)
 
 def test_fast_phason_matches_reference():

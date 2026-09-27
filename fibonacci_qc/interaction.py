@@ -68,8 +68,8 @@ def _require_mode(
 
 def _status_log_usable(status: np.ndarray) -> np.ndarray:
     "True when log_T is trusted"
-    from fibonacci_qc.scattering import status_is_ok
-    return status_is_ok(status)
+    from fibonacci_qc.scattering import trusted_log_mask
+    return trusted_log_mask(status)
 
 def _broadcast_clean_usable(
     clean_usable: np.ndarray,
@@ -77,7 +77,7 @@ def _broadcast_clean_usable(
 ) -> np.ndarray:
     clean_usable = np.asarray(clean_usable, dtype = bool)
     if clean_usable.ndim == 1:
-        return np.broadcast_to(clean_usable[np.newaxis, :], (n_pos, clean_usable.size)).copy
+        return np.broadcast_to(clean_usable[np.newaxis, :], (n_pos, clean_usable.size)).copy()
     return clean_usable
 
 def _cell_ok_from_status(status: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -164,9 +164,9 @@ def interaction_from_mode_arrays(
         status_width=status_width,
         status_clean=status_clean,
     )
-    dlog_sub = delta_log_t(log_t_sub, log_t_clean)
-    dlog_pot = delta_log_t(log_t_pot, log_t_clean)
-    dlog_width = delta_log_t(log_t_width, log_t_clean)
+    dlog_sub = delta_log_t(log_t_sub, log_t_clean, usable=usable)
+    dlog_pot = delta_log_t(log_t_pot, log_t_clean, usable=usable)
+    dlog_width = delta_log_t(log_t_width, log_t_clean, usable=usable)
     n_pos = delta_sub.shape[0]
     if positions is None:
         positions = np.arange(n_pos, dtype=np.int64)
@@ -177,6 +177,10 @@ def interaction_from_mode_arrays(
         valid = np.ones(n_pos, dtype=bool)
     else:
         valid = np.asarray(valid, dtype=bool)
+    if valid.shape != (n_pos,) or positions.shape != (n_pos,):
+        raise ValueError("interaction positions/valid do not match rows")
+    for array in (delta_sub, delta_pot, delta_width, dlog_sub, dlog_pot, dlog_width):
+        array[~valid, :] = np.nan
     return InteractionRemainder(
         I=interaction_remainder(delta_sub, delta_pot, delta_width),
         I_log=interaction_remainder_log(dlog_sub, dlog_pot, dlog_width),
@@ -203,6 +207,11 @@ def interaction_from_sweeps(
     sub = _require_mode(modes, cfg.MODE_SUBSTITUTION)
     pot = _require_mode(modes, cfg.MODE_POTENTIAL_ONLY)
     width = _require_mode(modes, cfg.MODE_WIDTH_ONLY)
+    for other in (pot, width):
+        if not np.array_equal(sub.get("positions"), other.get("positions")):
+            raise ValueError("interaction mode positions disagree")
+        if "energies" in other and not np.array_equal(other["energies"], energies):
+            raise ValueError("interaction mode energies disagree")
     valid = np.asarray(sub["valid"], dtype=bool)&np.asarray(pot["valid"], dtype=bool)&np.asarray(width["valid"], dtype=bool)
     positions = np.asarray(sub.get("positions", np.arange(valid.size)),dtype=np.int64,)
     return interaction_from_mode_arrays(
@@ -245,7 +254,13 @@ def interaction_summary(
             continue
         i_win = remainder.I[valid][:, sel]
         i_log_win = remainder.I_log[valid][:, sel]
+        intended = int(np.count_nonzero(valid) * np.count_nonzero(sel))
         out[name] = {
+            "n_intended": intended,
+            "n_cells_I": int(np.count_nonzero(np.isfinite(i_win))),
+            "n_cells_I_log": int(np.count_nonzero(np.isfinite(i_log_win))),
+            "coverage_I": float(np.count_nonzero(np.isfinite(i_win))/intended),
+            "coverage_I_log": float(np.count_nonzero(np.isfinite(i_log_win))/intended),
             "rms_I": float(np.sqrt(np.nanmean(i_win ** 2))),
             "mean_abs_I": float(np.nanmean(np.abs(i_win))),
             "rms_I_log": float(np.sqrt(np.nanmean(i_log_win ** 2))),

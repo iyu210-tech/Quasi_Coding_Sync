@@ -145,7 +145,7 @@ def global_parity_stats(
     finite = np.isfinite(d)
     if not np.any(sel & finite):
         return GlobalParityStats(S_max=float("nan"), S_int=float("nan"))
-    s_max = float(np.nanmax(np.abs(d)))
+    s_max = float(np.max(np.abs(d[sel & finite])))
     integrated = integrate_contrast(d, e, e_min, e_max)
     return GlobalParityStats(S_max=s_max, S_int=integrated.abs)
 
@@ -167,6 +167,7 @@ def stratified_permutation_null(
     *,
     energies: Optional[np.ndarray] = None,
     sweep_valid: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
     n_replicates: int = cfg.PERMUTATION_REPLICATES,
     seed: int = 0,
 ) -> PermutationNullResult:
@@ -186,7 +187,7 @@ def stratified_permutation_null(
         if energies is not None
         else np.arange(t.shape[1], dtype=np.float64)
     )
-    observed_contrast = parity_contrast(t, parity, valid, energies=e_out)
+    observed_contrast = parity_contrast(t, parity, valid, energies=e_out, cell_valid=cell_valid)
     observed = global_parity_stats(observed_contrast.D, e_out)
     rng = np.random.default_rng(seed)
     null_s_max = np.empty(n_replicates, dtype=np.float64)
@@ -194,7 +195,7 @@ def stratified_permutation_null(
     for b in range(n_replicates):
         # One fixed labeling for energy axis
         perm_parity = permute_parity_within_strata(parity, labels, valid, rng)
-        d_b = parity_contrast(t, perm_parity, valid, energies=e_out).D
+        d_b = parity_contrast(t, perm_parity, valid, energies=e_out, cell_valid=cell_valid).D
         stats_b = global_parity_stats(d_b, e_out)
         null_s_max[b] = stats_b.S_max
         null_s_int[b] = stats_b.S_int
@@ -235,6 +236,7 @@ def run_geometry_nulls(
     *,
     energies: Optional[np.ndarray] = None,
     sweep_valid: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
     strata: Optional[Sequence[str]] = None,
     n_replicates: int = cfg.PERMUTATION_REPLICATES,
     seed: int = 0,
@@ -250,6 +252,7 @@ def run_geometry_nulls(
             family,
             energies=energies,
             sweep_valid=sweep_valid,
+            cell_valid=cell_valid,
             n_replicates=n_replicates,
             seed=seed + 1009 * offset,
         )
@@ -282,6 +285,7 @@ def analyze_generation_nulls(
             mode,
             energies=energies,
             sweep_valid=np.asarray(sweep["valid"], dtype=bool),
+            cell_valid=numerical_cell_mask(sweep["status"]) & np.isfinite(sweep["T"]),
             strata=strata,
             n_replicates=n_replicates,
             seed=seed + 10007 * m_idx,

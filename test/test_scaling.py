@@ -20,7 +20,7 @@ from fibonacci_qc.scaling import (
     fit_loglog_scaling,
     fit_scaling_curve,
     generations_in_window,
-    is_stable_fit,
+    assess_fit_stability,
     paired_alpha_contrast,
 )
 from fibonacci_qc.scaling_io import produce_scaling_analysis, save_scaling_analysis
@@ -58,10 +58,16 @@ def test_fit_increasing_contrast_negative_alpha():
     assert classify_direction(alpha) == DIRECTION_INCREASING
 
 def test_stability_requires_loo_and_rmse():
-    assert is_stable_fit(0.2, 0.01, (0.19, 0.21, 0.20), DIRECTION_DECREASING)
-    assert not is_stable_fit(0.2, 0.01, (0.19, 0.40, 0.20), DIRECTION_DECREASING)
-    assert not is_stable_fit(0.2, cfg.SCALING_RMSE_MAX + 0.1, (0.2, 0.2), DIRECTION_DECREASING)
-    assert not is_stable_fit(0.2, 0.01, (0.01, 0.02), DIRECTION_DECREASING)  # flip the direction
+    stable,indeterminate=assess_fit_stability(.2,.01,(.19,.21,.20),(True,True,True),DIRECTION_DECREASING)
+    assert stable and not indeterminate
+    stable,indeterminate=assess_fit_stability(.2,.01,(.19,.4,.2),(True,True,True),DIRECTION_DECREASING)
+    assert not stable and not indeterminate
+    stable,indeterminate=assess_fit_stability(.2,cfg.SCALING_RMSE_MAX+.1,(.2,.2),(True,True),DIRECTION_DECREASING)
+    assert not stable and not indeterminate
+    stable,indeterminate=assess_fit_stability(.2,.01,(float("nan"),.2),(True,True),DIRECTION_DECREASING)
+    assert not stable and indeterminate
+    stable,indeterminate=assess_fit_stability(.2,.01,(),(),DIRECTION_DECREASING)
+    assert not stable and indeterminate
 
 def test_fit_scaling_curve_shapes_and_loo():
     gens = (4, 5, 6, 7)
@@ -113,9 +119,9 @@ def test_collect_from_bundles_and_analyze_scaling():
     np.testing.assert_allclose(d_out, d)
 
     # Synthetic D(E) curves for 2 modes (known alpha = 0.25 and 0.10)
-    bundles_sub = {g: {"energies": energies, "D": d[i]} for i, g in enumerate(gens)}
+    bundles_sub = {g: {"energies": energies, "D_by_mode": {cfg.MODE_SUBSTITUTION: d[i]}} for i, g in enumerate(gens)}
     bundles_width = {
-        g: {"energies": energies, "D": (1.0 * sizes[i] ** (-0.10)) * np.ones(energies.size)}
+        g: {"energies": energies, "D_by_mode": {cfg.MODE_WIDTH_ONLY: (1.0 * sizes[i] ** (-0.10)) * np.ones(energies.size)}}
         for i, g in enumerate(gens)
     }
 

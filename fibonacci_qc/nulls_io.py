@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Dict, Optional, Sequence, Union
 import numpy as np
+from dataclasses import asdict
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.geometry import build_geometry
@@ -15,27 +16,11 @@ from fibonacci_qc.robustness import (ContrastRobustness, ResonanceRobustness, an
 
 PathLike = Union[str, Path]
 
-def _contrast_to_dict(contrast: ContrastRobustness) -> Dict[str, object]:
-    return {
-        "max_abs_D": contrast.max_abs_D,
-        "rmse_D": contrast.rmse_D,
-        "integrated_baseline": contrast.integrated_baseline,
-        "integrated_fine": contrast.integrated_fine,
-        "integrated_abs_diff": contrast.integrated_abs_diff,
-    }
+def _contrast_to_dict(contrast):
+    return asdict(contrast)
 
-def _resonance_to_dict(row: ResonanceRobustness) -> Dict[str, object]:
-    return {
-        "position": row.position,
-        "n_peaks_baseline": row.n_peaks_baseline,
-        "n_peaks_fine": row.n_peaks_fine,
-        "n_matched": row.n_matched,
-        "mean_abs_peak_shift": row.mean_abs_peak_shift,
-        "max_abs_peak_shift": row.max_abs_peak_shift,
-        "mean_abs_delta_E_baseline": row.mean_abs_delta_E_baseline,
-        "mean_abs_delta_E_fine": row.mean_abs_delta_E_fine,
-        "delta_E_summary_diff": row.delta_E_summary_diff,
-    }
+def _resonance_to_dict(row):
+    return asdict(row)
 
 def save_nulls_analysis(
     analysis: Dict[str, object],
@@ -46,6 +31,7 @@ def save_nulls_analysis(
 ) -> Path:
     "Permutation-null results to .npz + JSON metadata."
     cfg.ensure_output_dirs()
+    n_replicates = int(analysis["n_replicates"])
     out = Path(path)
     if not out.is_absolute():
         out = cfg.OUTPUT_ANALYSIS / out
@@ -134,6 +120,13 @@ def save_robustness_analysis(
             "n_energy_fine": payload["n_energy_fine"],
             "contrast": _contrast_to_dict(contrast),
             "resonance": [_resonance_to_dict(r) for r in resonance_rows],
+            "contrast_gate": payload["contrast_gate"],
+            "primary_gate": payload["primary_gate"],
+            "numerical_gate": payload["numerical_gate"],
+            "response_baseline": payload["response_baseline"],
+            "response_fine": payload["response_fine"],
+            "response_comparison": payload["response_comparison"],
+            "all_valid_resonance_positions": payload["all_valid_resonance_positions"],
         }
     np.savez_compressed(out, **np_payload)
     meta = {
@@ -142,6 +135,10 @@ def save_robustness_analysis(
         "geometry_metadata": analysis.get("geometry_metadata"),
         "modes": json_modes,
         "run_metadata": metadata or {},
+        "primary_gate": analysis["primary_gate"],
+        "interaction": analysis["interaction"],
+        "interaction_gate": analysis["interaction_gate"],
+        "gate_tolerances": analysis["gate_tolerances"],
     }
     out.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str), encoding="utf-8")
     return out
@@ -208,7 +205,7 @@ def produce_nulls_analysis(
         analysis = analyze_generation_nulls(
             bundle,
             geom,
-            modes=list(mode_data),
+            modes=list(bundle["modes"]),
             n_replicates=n_replicates,
             seed=seed,
         )
@@ -220,27 +217,37 @@ def produce_nulls_analysis(
     return manifest
 
 def produce_robustness_analysis(
-    *,
-    generations: Optional[Sequence[int]] = None,
-    modes: Optional[Sequence[str]] = None,
-    energies_baseline: Optional[np.ndarray] = None,
-    energies_fine: Optional[np.ndarray] = None,
-    output_dir: PathLike = "robustness",
-) -> Dict[str, object]:
-    "Batch robustness checks written under output/analysis/robustness"
+    *, 
+    generations=None,
+    modes=None,
+    energies_baseline=None,
+    energies_fine=None,
+    output_dir="robustness",
+    raw_dir=None
+):
+    from fibonacci_qc.robustness import worst_gate
     cfg.ensure_output_dirs()
-    gens = list(generations or cfg.GENERATIONS)
-    modes = list(modes or cfg.DEFECT_MODES)
-    out_root = Path(output_dir)
-    if not out_root.is_absolute():
-        out_root = cfg.OUTPUT_ANALYSIS / out_root
-    out_root.mkdir(parents=True, exist_ok=True)
-    manifest: Dict[str, object] = {"files": [], "generations": gens, "modes": modes}
-    for generation in gens:
-        analysis = analyze_generation_robustness(generation, modes=modes, energies_baseline=energies_baseline, energies_fine=energies_fine,)
-        out = save_robustness_analysis(analysis, out_root / f"n{generation:02d}" / "robustness.npz",)
-        manifest["files"].append(str(out.relative_to(out_root)))
-    manifest_path = out_root / "manifest.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
-    manifest["manifest_path"] = str(manifest_path)
+    gens=list(cfg.GENERATIONS if generations is None else generations)
+    wanted=list(cfg.DEFECT_MODES if modes is None else modes)
+    root=Path(output_dir)
+    if not root.is_absolute():root=cfg.OUTPUT_ANALYSIS/root
+    root.mkdir(parents=True,exist_ok=True)
+    rawroot=Path(raw_dir) if raw_dir is not None else None
+    if rawroot is not None and not rawroot.is_absolute():rawroot=cfg.OUTPUT_RAW/rawroot
+    manifest={
+        "files":[],
+        "generations":gens,
+        "modes":wanted,
+        "generation_gates":{},
+        "gate_tolerances":dict(cfg.GATE_TOLERANCES)
+    }
+    for gen in gens:
+        bundle=load_generation_bundle(rawroot/f"n{gen:02d}",modes=wanted) if rawroot is not None else None
+        analysis=analyze_generation_robustness(gen,modes=wanted,energies_baseline=energies_baseline, energies_fine=energies_fine,baseline_bundle=bundle)
+        path=save_robustness_analysis(analysis,root/f"n{gen:02d}"/"robustness.npz", metadata={"source_raw_dir":str(rawroot) if rawroot is not None else None})
+        manifest["files"].append(str(path.relative_to(root)))
+        manifest["generation_gates"][str(gen)]=analysis["primary_gate"]
+    manifest["primary_gate"]=worst_gate(manifest["generation_gates"].values())
+    path=root/"manifest.json";path.write_text(json.dumps(manifest,indent=2),encoding="utf-8")
+    manifest["manifest_path"]=str(path)
     return manifest

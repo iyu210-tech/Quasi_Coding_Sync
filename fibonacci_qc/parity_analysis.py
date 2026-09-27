@@ -31,6 +31,7 @@ class ParityContrastResult:
     n_even_by_energy: np.ndarray  # int64, shape (n_energy,)
     n_odd_by_energy: np.ndarray
     coverage: float
+    coverage_by_energy: np.ndarray
 
 @dataclass(frozen=True)
 class IntegratedContrast:
@@ -53,6 +54,8 @@ class ResponseMagnitude:
     e_min: float
     e_max: float
     n_cells: int
+    n_intended: int = 0
+    coverage: float = float("nan")
 
 @dataclass(frozen=True)
 class ParityCheckResult:
@@ -193,7 +196,11 @@ def parity_contrast(
         raise ValueError("energy length has to match transmission energy axis")
 
     n_geo = int(np.count_nonzero(geo_valid)) * t.shape[1]
-    n_used = int(np.count_nonzero(analysis_mask))
+    finite_used = analysis_mask & np.isfinite(t)
+    n_used = int(np.count_nonzero(finite_used))
+    n_geo_positions = int(np.count_nonzero(geo_valid))
+    coverage_by_energy = (np.count_nonzero(finite_used, axis=0) / n_geo_positions
+                          if n_geo_positions else np.full(t.shape[1], np.nan))
     coverage = float(n_used / n_geo) if n_geo > 0 else float("nan")
 
     return ParityContrastResult(
@@ -205,7 +212,8 @@ def parity_contrast(
         valid=geo_valid,
         n_even_by_energy=n_even_e,
         n_odd_by_energy=n_odd_e,
-        coverage=coverage
+        coverage=coverage,
+        coverage_by_energy=coverage_by_energy,
     )
 
 def integrate_contrast(
@@ -217,6 +225,8 @@ def integrate_contrast(
     "Integrate D(E) over an energy window [e_min, e_max]"
     d = np.asarray(contrast, dtype=np.float64)
     e = np.asarray(energies, dtype=np.float64)
+    if e.ndim != 1 or e.size < 2 or not np.all(np.isfinite(e)) or not np.all(np.diff(e) > 0):
+        raise ValueError("integration needs at least two strictly increasing finite energies")
     if d.shape != e.shape:
         raise ValueError("contrast and energies must have same shape")
     if e_max < e_min:
@@ -286,34 +296,21 @@ def integrate_contrast_windows(
         for name, (lo, hi) in windows.items()
     }
 
-def summarize_delta_t(
-    delta_t: np.ndarray,
-    energies: np.ndarray,
-    valid: np.ndarray,
-    *,
-    cell_valid: Optional[np.ndarray] = None,
-    e_min: float,
-    e_max: float,
-) -> ResponseMagnitude:
-    "Overall response magnitude over [e_min, e_max]. For RQ1"
-    dt = np.asarray(delta_t, dtype=np.float64)
-    e=np.asarray(energies, dtype=np.float64)
-    if dt.ndim!= 2:
-        raise ValueError("delta_t must have shape (n_positions, n_energy)")
-    if e.shape[0]!= dt.shape[1]:
-        raise ValueError("energies length has to match delta_t axis")
-    mask = combine_analysis_mask(np.asarray(valid, dtype=bool), cell_valid, n_energy=dt.shape[1])
-    sel = (e>=e_min) & (e<= e_max)
-    if not np.any(sel):
-        return ResponseMagnitude(mean_abs=float("nan"), rms = float("nan"), e_min=float(e_min), e_max = float(e_max), n_cells=0)
-    vals = np.where(mask[:, sel], dt[:, sel], np.nan)
-    flat = vals.ravel()
-    good = np.isfinite(flat)
-    n_cells = int(np.count_nonzero(good))
-    if n_cells == 0:
-        return ResponseMagnitude(mean_abs=float("nan"), rms = float("nan"), e_min=float(e_min), e_max = float(e_max), n_cells=0)
-    x = flat[good]
-    return ResponseMagnitude(mean_abs=float(np.mean(np.abs(x))), rms = float(np.sqrt(np.mean(x**2))), e_min=float(e_min), e_max = float(e_max), n_cells=n_cells)
+def summarize_delta_t(delta_t, energies, valid, *, cell_valid=None, e_min, e_max):
+    """Unweighted finite-grid cell mean; certified zeros remain in denominator."""
+    dt, e = np.asarray(delta_t, dtype=float), np.asarray(energies, dtype=float)
+    if dt.ndim != 2 or e.shape != (dt.shape[1],):
+        raise ValueError("delta_t and energies axes do not match")
+    mask = combine_analysis_mask(np.asarray(valid, dtype=bool), cell_valid, n_energy=e.size)
+    sel = (e >= e_min) & (e <= e_max)
+    intended = int(np.count_nonzero(valid) * np.count_nonzero(sel))
+    use = mask[:, sel] & np.isfinite(dt[:, sel])
+    x = dt[:, sel][use]
+    n = x.size
+    return ResponseMagnitude(mean_abs=float(np.mean(np.abs(x))) if n else float("nan"),
+        rms=float(np.sqrt(np.mean(x*x))) if n else float("nan"),
+        e_min=float(e_min), e_max=float(e_max), n_cells=n, n_intended=intended,
+        coverage=float(n/intended) if intended else float("nan"))
 
 def summarize_delta_t_windows(
     delta_t: np.ndarray,
@@ -365,15 +362,17 @@ def origin_shift_check(
     valid: np.ndarray,
     *,
     energies: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
     atol: float = cfg.TOLERANCES.transmission_atol,
 ) -> ParityCheckResult:
     "Verify shifting origin by one site flips D(E)'s sign"
-    base = parity_contrast(transmission, parity, valid, energies=energies)
+    base = parity_contrast(transmission, parity, valid, energies=energies, cell_valid=cell_valid)
     shifted = parity_contrast(
         transmission,
         (np.asarray(parity) + 1) % 2,
         valid,
         energies=energies,
+        cell_valid=cell_valid,
     )
     err = np.nanmax(np.abs(shifted.D + base.D))
     passed = bool(np.isfinite(err) and err <= atol)
@@ -391,14 +390,15 @@ def reversal_check(
     valid: np.ndarray,
     *,
     energies: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
     atol: float = cfg.TOLERANCES.solver_crosscheck_atol,
 ) -> ParityCheckResult:
     "Mirror position axis, compare D to original"
     t = np.asarray(transmission, dtype=np.float64)
     n_pos = t.shape[0]
     mirrored = t[::-1, :]
-    base = parity_contrast(transmission, parity, valid, energies=energies)
-    rev = parity_contrast(mirrored, parity, valid[::-1], energies=energies)
+    base = parity_contrast(transmission, parity, valid, energies=energies, cell_valid=cell_valid)
+    rev = parity_contrast(mirrored, parity, valid[::-1], energies=energies, cell_valid=None if cell_valid is None else np.asarray(cell_valid)[::-1, :])
 
     expected_factor = 1.0 if (n_pos % 2 == 1) else -1.0
     err = np.nanmax(np.abs(rev.D - expected_factor * base.D))
@@ -418,13 +418,14 @@ def parity_checks(
     *,
     sweep_valid: Optional[np.ndarray] = None,
     energies: Optional[np.ndarray] = None,
+    cell_valid: Optional[np.ndarray] = None,
 ) -> Dict[str, ParityCheckResult]:
     "Origin shift & reversal checks"
     parity = position_parity(geometry, mode)
     valid = position_valid_mask(geometry, mode, sweep_valid=sweep_valid)
     return {
-        "origin_shift": origin_shift_check(transmission, parity, valid, energies=energies),
-        "reversal": reversal_check(transmission, parity, valid, energies=energies),
+        "origin_shift": origin_shift_check(transmission, parity, valid, energies=energies, cell_valid=cell_valid),
+        "reversal": reversal_check(transmission, parity, valid, energies=energies, cell_valid=cell_valid),
     }
 
 def analyze_mode_parity(
@@ -437,13 +438,15 @@ def analyze_mode_parity(
     families: Optional[Sequence[str]] = None,
     cell_valid: Optional[np.ndarray] = None,
     min_coverage: Optional[float] = None,
+    delta_t: Optional[np.ndarray] = None,
+    response_cell_valid: Optional[np.ndarray] = None,
 ) -> Dict[str, object]:
     "Parity analysis for one defect mode in one generation"
     energies_arr = np.asarray(energies, dtype=np.float64)
     t = np.asarray(transmission, dtype=np.float64)
     parity = position_parity(geometry, mode)
     valid = position_valid_mask(geometry, mode, sweep_valid=sweep_valid)
-    unconditional = parity_contrast(t, parity, valid, energies=energies_arr)
+    unconditional = parity_contrast(t, parity, valid, energies=energies_arr, cell_valid=cell_valid)
     if min_coverage is not None and (not np.isfinite(unconditional.coverage) or unconditional.coverage < min_coverage):
         raise RuntimeError(f"parity coverage {unconditional.coverage} below min_coverage={min_coverage} for mode={mode!r} generation={geometry.generation}")
     conditional = conditional_parity_contrasts(
@@ -457,6 +460,11 @@ def analyze_mode_parity(
     )
     checks = parity_checks(t, geometry, mode, sweep_valid=sweep_valid, energies=energies_arr, cell_valid=cell_valid)
 
+    response = (summarize_delta_t_windows(delta_t, energies_arr, valid,
+                cell_valid=response_cell_valid if response_cell_valid is not None else cell_valid)
+                if delta_t is not None else {})
+    numerical_failure = bool(np.any(unconditional.coverage_by_energy < cfg.MIN_NUMERICAL_COVERAGE)
+                             or not np.isfinite(unconditional.coverage))
     integrated_unconditional = integrate_contrast_windows(unconditional.D, energies_arr)
     integrated_conditional: Dict[str, Dict[str, Dict[str, IntegratedContrast]]] = {}
     for family, strata in conditional.items():
@@ -473,40 +481,41 @@ def analyze_mode_parity(
         "valid": valid,
         "cell_valid": cell_valid,
         "coverage": unconditional.coverage,
+        "numerical_failure": numerical_failure,
+        "response": response,
         "unconditional": unconditional,
         "conditional": conditional,
         "integrated": {"unconditional": integrated_unconditional, "conditional": integrated_conditional},
         "checks": checks,
     }
-#continue from here with analyze_generation_parity
-def analyze_generation_parity(
-    raw_bundle: Dict[str, object],
-    geometry: Optional[FibonacciGeometry] = None,
-    *,
-    modes: Optional[Sequence[str]] = None,
-) -> Dict[str, object]:
-    "Parity analysis for all defect modes in one generation, from raw bundle"
+def analyze_generation_parity(raw_bundle, geometry=None, *, modes=None):
+    from fibonacci_qc.scattering import trusted_transmission_mask, encode_status
     generation = int(raw_bundle["generation"])
-    geom = geometry if geometry is not None else build_geometry(generation)
+    geom = build_geometry(generation) if geometry is None else geometry
     if geom.generation != generation:
-        raise ValueError(f"geometry.generation={geom.generation} does not match bundle={generation}")
-    energies = np.asarray(raw_bundle["energies"], dtype=np.float64)
-    modes_dict: Dict[str, Dict[str, np.ndarray]] = raw_bundle["modes"]
-    modes = list(modes or modes_dict.keys())
-    mode_results: Dict[str, object] = {}
-    for mode in modes:
-        sweep = modes_dict[mode]
-        t = np.asarray(sweep["T"], dtype=np.float64)
-        sweep_valid = np.asarray(sweep["valid"], dtype=bool)
-        cell_valid = numerical_cell_mask(sweep["status"]) if "status" in sweep else None
-        mode_results[mode] = analyze_mode_parity(t, geom, mode, energies=energies, sweep_valid=sweep_valid, cell_valid=cell_valid)
-
-    return {
-        "generation": generation,
-        "energies": energies,
-        "geometry_metadata": geom.to_metadata(),
-        "modes": mode_results,
-    }
+        raise ValueError("generation does not match geometry")
+    e = np.asarray(raw_bundle["energies"], dtype=float)
+    clean = np.asarray(raw_bundle["T_clean"], dtype=float)
+    clean_ok = trusted_transmission_mask(raw_bundle["clean_status"], clean, raw_bundle["log_T_clean"])
+    results = {}
+    for mode in (list(raw_bundle["modes"]) if modes is None else modes):
+        sweep = raw_bundle["modes"][mode]
+        t = np.asarray(sweep["T"], dtype=float)
+        cell = trusted_transmission_mask(sweep["status"], t, sweep["log_T"])
+        joint = cell & clean_ok[np.newaxis, :]
+        # Recompute from authoritative arrays; never trust a stale saved delta.
+        delta = np.where(joint, t - clean[np.newaxis, :], np.nan)
+        result = analyze_mode_parity(t, geom, mode, energies=e,
+            sweep_valid=np.asarray(sweep["valid"], dtype=bool), cell_valid=cell,
+            delta_t=delta, response_cell_valid=joint)
+        geo = position_valid_mask(geom, mode, sweep_valid=sweep["valid"])
+        code = encode_status(sweep["status"])
+        result["n_certified_underflow"] = int(np.count_nonzero((code == 2) & geo[:, None]))
+        result["n_invalid"] = int(np.count_nonzero(~cell & geo[:, None]))
+        result["numerical_failure"] |= bool(np.any(~joint[geo]))
+        results[mode] = result
+    return {"generation": generation, "energies": e, "geometry_metadata": geom.to_metadata(),
+            "modes": results, "numerical_failure": any(v["numerical_failure"] for v in results.values())}
 
 def integrated_summary(
     analysis: Dict[str, object],
@@ -525,7 +534,3 @@ def integrated_summary(
         }
         summary[mode] = mode_summary
     return summary
-
-def numerical_cell_mask(status: np.ndarray) -> np.ndarray:
-    status = np.asarray(status, dtype=object)
-    return status == "ok"

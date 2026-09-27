@@ -132,7 +132,7 @@ def leave_one_out_alphas(
     *,
     min_usable: int = cfg.SCALING_MIN_USABLE_GENERATIONS,
     d_floor: float = cfg.SCALING_D_FLOOR,
-) -> Tuple[Tuple[float, ...], Tuple[int, ...]]:
+) -> Tuple[Tuple[float, ...], Tuple[int, ...], Tuple[bool, ...]]:
     "Refit after dropping each generation"
     sizes = np.asarray(sizes, dtype=np.float64)
     abs_d = np.asarray(abs_d, dtype=np.float64)
@@ -167,7 +167,7 @@ def assess_fit_stability(
     *,
     loo_tol: float = cfg.SCALING_LOO_ALPHA_TOL,
     rmse_max: float = cfg.SCALING_RMSE_MAX,
-) -> bool:
+) -> Tuple[bool, bool]:
     "Return (stable, indeterminate). Each LOO deletion must be supported"
     if not np.isfinite(alpha) or not np.isfinite(rmse):
         return False, False
@@ -288,7 +288,8 @@ def collect_parity_curves(
         parity = position_parity(geom, mode)
         valid = position_valid_mask(geom, mode, sweep_valid=np.asarray(sweep["valid"], dtype=bool))
         cell = numerical_cell_mask(sweep["status"] if "status" in sweep else None)
-        d_rows.append(parity_contrast(sweep["T"], parity, valid, energies=energies, cell_valid=cell).D)
+        d = parity_contrast(sweep["T"], parity, valid, energies=energies, cell_valid=cell)
+        d_rows.append(np.where(d.coverage_by_energy >= cfg.MIN_NUMERICAL_COVERAGE, d.D, np.nan))
     return sizes, np.vstack(d_rows), energies
 
 def collect_parity_curves_from_bundles(
@@ -307,7 +308,7 @@ def collect_parity_curves_from_bundles(
     for gen in gens:
         bundle = bundles_by_generation[gen]
         e = np.asarray(bundle["energies"], dtype=np.float64)
-        if e.shape != energies.shape or not np.allclose(e, energies):
+        if e.shape != energies.shape or not np.array_equal(e, energies):
             raise ValueError(f"energy grid mismatch at generation {gen}")
         if "D_by_mode" in bundle:
             d_map = bundle["D_by_mode"]
@@ -324,7 +325,9 @@ def collect_parity_curves_from_bundles(
         geom = build_geometry(gen)
         parity = position_parity(geom, mode)
         valid = position_valid_mask(geom, mode, sweep_valid=np.asarray(sweep["valid"], dtype=bool))
-        rows.append(parity_contrast(sweep["T"], parity, valid, energies=energies).D)
+        cell = numerical_cell_mask(sweep["status"]) & np.isfinite(sweep["T"])
+        d = parity_contrast(sweep["T"], parity, valid, energies=energies, cell_valid=cell)
+        rows.append(np.where(d.coverage_by_energy >= cfg.MIN_NUMERICAL_COVERAGE, d.D, np.nan))
     return sizes, np.vstack(rows), energies, gens
 
 def common_support_mask(
@@ -358,38 +361,30 @@ def paired_alpha_contrast(
         out["delta_alpha_stable"] = np.where(support_stable, delta, np.nan)
     return out
 
-def paired_alpha_on_shared_generations(
-    sizes: np.ndarray,
-    abs_d_a: np.ndarray,
-    abs_d_b: np.ndarray,
-    energies: np.ndarray,
-    *,
-    min_usable: int = cfg.SCALING_MIN_USABLE_GENERATIONS,
-    d_floor: float = cfg.SCALING_D_FLOOR,
-) -> Dict[str, np.ndarray]:
-    "delta alpha(E) with both modes refit on generations"
-    sizes = np.asarray(sizes, dtype=np.float64)
-    abs_d_a = np.asarray(abs_d_a, dtype=np.float64)
-    abs_d_b = np.asarray(abs_d_b, dtype=np.float64)
-    energies = np.asarray(energies, dtype=np.float64)
-    n_e = energies.size
-    delta = np.full(n_e, np.nan, dtype=np.float64)
-    support = np.zeros(n_e, dtype=bool)
-    shared_n = np.zeros(n_e, dtype=np.int64)
-    for e_idx in range(n_e):
-        shared = _usable_mask(abs_d_a[:, e_idx], d_floor=d_floor) & _usable_mask(abs_d_b[:, e_idx], d_floor=d_floor)
-        shared_n[e_idx] = int(np.count_nonzero(shared))
-        if shared_n[e_idx] < min_usable:
-            continue
-        a_a, _, _, _, ok_a = fit_loglog_scaling(sizes[shared], abs_d_a[shared, e_idx], min_usable=min_usable, d_floor=d_floor)
-        a_b, _, _, _, ok_b = fit_loglog_scaling(sizes[shared], abs_d_b[shared, e_idx], min_usable=min_usable, d_floor=d_floor)
-        if ok_a and ok_b:
-            delta[e_idx] = a_a - a_b
-            support[e_idx] = True
+def paired_alpha_on_shared_generations(sizes, abs_d_a, abs_d_b, energies, *,
+        min_usable=cfg.SCALING_MIN_USABLE_GENERATIONS, d_floor=cfg.SCALING_D_FLOOR):
+    sizes, a, b, energies = map(lambda x: np.asarray(x, dtype=float), (sizes, abs_d_a, abs_d_b, energies))
+    delta = np.full(energies.size, np.nan); support = np.zeros(energies.size, dtype=bool)
+    stable = np.zeros(energies.size, dtype=bool); counts = np.zeros(energies.size, dtype=int)
+    for j in range(energies.size):
+        use = _usable_mask(a[:,j], d_floor=d_floor) & _usable_mask(b[:,j], d_floor=d_floor)
+        counts[j] = int(np.count_nonzero(use))
+        if counts[j] < min_usable: continue
+        aa, _, ra, _, oka = fit_loglog_scaling(sizes[use], a[use,j], min_usable=min_usable, d_floor=d_floor)
+        ab, _, rb, _, okb = fit_loglog_scaling(sizes[use], b[use,j], min_usable=min_usable, d_floor=d_floor)
+        if not (oka and okb): continue
+        delta[j], support[j] = aa-ab, True
+        loo_a, _, rel_a = leave_one_out_alphas(sizes[use], a[use,j], range(counts[j]), min_usable=min_usable, d_floor=d_floor)
+        loo_b, _, rel_b = leave_one_out_alphas(sizes[use], b[use,j], range(counts[j]), min_usable=min_usable, d_floor=d_floor)
+        sa, _ = assess_fit_stability(aa,ra,loo_a,rel_a,classify_direction(aa))
+        sb, _ = assess_fit_stability(ab,rb,loo_b,rel_b,classify_direction(ab))
+        stable[j] = sa and sb
     return {
-        "delta_alpha_shared_gens": delta,
+        "delta_alpha_shared_gens": delta, 
         "support_shared_gens": support,
-        "shared_n_usable": shared_n,
+        "shared_n_usable": counts, 
+        "support_stable_shared_gens": stable,
+        "delta_alpha_stable_shared_gens": np.where(stable,delta,np.nan)
     }
 
 def analyze_mode_scaling(
@@ -467,6 +462,11 @@ def analyze_scaling(
             }
             shared = paired_alpha_on_shared_generations(np.asarray(mode_fits[mode_a].sizes, dtype=np.float64), mode_fits[mode_a].abs_d, mode_fits[mode_b].abs_d, mode_fits[mode_a].energies)
             pair_results[name].update(shared)
+            pair_results[name]["delta_alpha"] = shared["delta_alpha_shared_gens"]
+            pair_results[name]["support"] = shared["support_shared_gens"]
+            pair_results[name]["support_stable"] = shared["support_stable_shared_gens"]
+            pair_results[name]["delta_alpha_stable"] = shared["delta_alpha_stable_shared_gens"]
+            pair_results[name]["pairing"] = "both slopes refit on the same usable generations"
         energies_out = next(iter(mode_fits.values())).energies if mode_fits else (
             np.asarray(energies) if energies is not None else cfg.energy_grid()
         )
@@ -483,7 +483,7 @@ def analyze_scaling(
         e = np.asarray(payload["energies"], dtype=np.float64)
         if energies_ref is None:
             energies_ref = e
-        elif e.shape != energies_ref.shape or not np.allclose(e, energies_ref):
+        elif e.shape != energies_ref.shape or not np.array_equal(e, energies_ref):
             raise ValueError("energy grids differ across fit windows; cannot form global support")
         global_parts.append(np.asarray(payload["common_support"], dtype=bool))
     global_support = common_support_mask(*global_parts) if global_parts else np.array([], dtype=bool)

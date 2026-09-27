@@ -49,18 +49,17 @@ def run_raw_driver(
         validate=validate,
     )
 
-def _windows_for_generations(generations: Sequence[int]) -> list:
-    "Use locked fit windows when available, otherwise the span of generations"
-    gens = sorted(int(g) for g in generations)
-    gen_set = set(gens)
-    usable = [
-        (lo, hi)
-        for lo, hi in cfg.FIT_GENERATION_WINDOWS
-        if all(g in gen_set for g in range(lo, hi + 1))
-    ]
-    if usable:
-        return usable
-    return [(gens[0], gens[-1])]
+def _windows_for_generations(generations):
+    gens=sorted(set(int(g) for g in generations))
+    if not gens:raise ValueError("no generations")
+    use=[(a,b) for a,b in cfg.FIT_GENERATION_WINDOWS if set(range(a,b+1)).issubset(gens)]
+    if use:return use
+    spans=[];start=prev=gens[0]
+    for g in gens[1:]:
+        if g!=prev+1:spans.append((start,prev));start=g
+        prev=g
+    spans.append((start,prev))
+    return spans
 
 def _study_energies(raw_dir: str, generations: Optional[Sequence[int]]) -> np.ndarray:
     from fibonacci_qc.raw_data import load_generation_bundle
@@ -79,67 +78,52 @@ def _study_energies(raw_dir: str, generations: Optional[Sequence[int]]) -> np.nd
     return np.asarray(bundle["energies"], dtype=np.float64)
 
 def run_analyze_driver(
-    *,
-    raw_dir: str = "study",
-    generations: Optional[Sequence[int]] = None,
-    modes: Optional[Sequence[str]] = None,
-    n_replicates: int = cfg.PERMUTATION_REPLICATES,
-) -> dict:
-    "Run parity, resonance, nulls, and scaling analysis on frozen raw data"
-    gens = list(generations) if generations is not None else None
-    windows = _windows_for_generations(gens) if gens else None
-    from fibonacci_qc.nulls_io import produce_nulls_analysis, produce_robustness_analysis
-    results = {
-        "parity": produce_parity_analysis(
-            raw_dir,
-            generations=gens,
-            modes=modes,
-            output_dir="parity",
-        ),
-        "resonance": produce_resonance_analysis(
-            raw_dir,
-            generations=gens,
-            modes=modes,
-            output_dir="resonance",
-        ),
-        "nulls": produce_nulls_analysis(
-            raw_dir,
-            generations=gens,
-            modes=modes,
-            n_replicates=n_replicates,
-            output_dir="nulls",
-        ),
-        "scaling": produce_scaling_analysis(
-            raw_dir,
-            generations=gens,
-            modes=modes,
-            windows=windows,
-            output_dir="scaling",
-        ),
-        "robustness": produce_robustness_analysis(
-            generations =gens,
-            modes=modes,
-            output_dir="robustness"
-        )
-    }
-    summary_path = cfg.OUTPUT_ANALYSIS / "analyze_manifest.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "raw_dir": raw_dir,
-        "generations": list(generations) if generations else None,
-        "modes": list(modes) if modes else list(cfg.DEFECT_MODES),
-        "metadata": run_metadata(
-            generations=list(generations or cfg.GENERATIONS),
-            energies=_study_energies(raw_dir, generations),
-            extra={"driver": "analyze", "raw_dir": str(raw_dir)},
-        ),
-        "products": {
-            name: {"manifest_path": value.get("manifest_path"), "files": value.get("files")}
-            for name, value in results.items()
-        },
-    }
-    summary_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    results["analyze_manifest_path"] = str(summary_path)
+    *,raw_dir="study",
+    generations=None,
+    modes=None,
+    n_replicates=cfg.PERMUTATION_REPLICATES):
+    from fibonacci_qc.raw_data import load_generation_bundle,config_sha256,_file_hash
+    from fibonacci_qc.nulls_io import produce_robustness_analysis
+    import hashlib
+    raw_root=_resolve_raw(raw_dir)
+    gens=(sorted(int(p.name[1:]) for p in raw_root.glob("n*") if p.is_dir() and p.name[1:].isdigit())
+          if generations is None else list(generations))
+    if not gens:raise FileNotFoundError("no requested raw generations")
+    first=load_generation_bundle(raw_root/f"n{gens[0]:02d}",modes=modes)
+    wanted=list(first["modes"]) if modes is None else list(modes)
+    energies=np.asarray(first["energies"],dtype=float)
+    root=cfg.OUTPUT_ANALYSIS/raw_root.name
+    root.mkdir(parents=True,exist_ok=True)
+    files=sorted(raw_root.glob("n*/*.npz"))
+    identity=hashlib.sha256("".join(str(p.relative_to(raw_root))+_file_hash(p) for p in files).encode()).hexdigest()
+    source={"source_raw_dir":str(raw_root),"source_data_sha256":identity, "source_run_id":first["run_metadata"].get("run_id"),"config_sha256":config_sha256(), "analysis_config":cfg.CONFIG.as_dict(),"generations":gens,"modes":wanted, "n_replicates":int(n_replicates)}
+    guard=root/"source.json"
+    if guard.exists() and json.loads(guard.read_text())!=source:
+        raise ValueError(f"analysis destination belongs to different data/settings: {root}; use a new run name")
+    guard.write_text(json.dumps(source,indent=2),encoding="utf-8")
+    results={}
+    results["parity"]=produce_parity_analysis(str(raw_root),generations=gens,modes=wanted,output_dir=root/"parity")
+    results["resonance"]=produce_resonance_analysis(str(raw_root),generations=gens,modes=wanted,output_dir=root/"resonance")
+    results["nulls"]=produce_nulls_analysis(str(raw_root),generations=gens,modes=wanted,n_replicates=n_replicates,output_dir=root/"nulls")
+    # Partition non-contiguous sample lists
+    windows=_windows_for_generations(gens)
+    results["scaling"]=produce_scaling_analysis(str(raw_root),generations=gens,modes=wanted,windows=windows,output_dir=root/"scaling")
+    results["robustness"]=produce_robustness_analysis(generations=gens,modes=wanted,
+        energies_baseline=energies,output_dir=root/"robustness",raw_dir=str(raw_root))
+    for sidecar in root.glob("**/*.meta.json"):
+        data=json.loads(sidecar.read_text())
+        data.setdefault("run_metadata",{}).update(source)
+        sidecar.write_text(json.dumps(data,indent=2),encoding="utf-8")
+    summary=root/"analyze_manifest.json"
+    payload={
+        "raw_dir":str(raw_root),
+        "generations":gens,"modes":wanted,
+        "primary_gate":results["robustness"]["primary_gate"],
+        "numerical_failure":results["parity"]["numerical_failure"],
+        "metadata":run_metadata(generations=gens,energies=energies,extra={"driver":"analyze",**source}),
+        "products":{key:{k:value.get(k) for k in ("manifest_path","files","primary_gate","numerical_failure")} for key,value in results.items()}}
+    summary.write_text(json.dumps(payload,indent=2),encoding="utf-8")
+    results["analyze_manifest_path"]=str(summary)
     return results
 
 def _resolve_raw(raw_dir: str) -> Path:
@@ -156,6 +140,11 @@ def _require_same_raw(meta: dict, raw_root: Path) -> None:
     recorded_path = Path(str(recorded))
     if not recorded_path.is_absolute():
         recorded_path = cfg.OUTPUT_RAW / recorded_path
+    if run.get("source_data_sha256"):
+        from fibonacci_qc.raw_data import _file_hash
+        import hashlib
+        identity=hashlib.sha256("".join(str(p.relative_to(raw_root))+_file_hash(p) for p in sorted(raw_root.glob("n*/*.npz"))).encode()).hexdigest()
+        if identity!=run["source_data_sha256"]:raise ValueError("raw data changed since saved analysis")
     if recorded_path.resolve() != raw_root:
         raise ValueError(f"saved source {recorded_path} does not match selected raw run {raw_root}")
 
@@ -234,28 +223,28 @@ def run_figures_driver(*, raw_dir: str = "study", generation: Optional[int] = No
     energies = np.asarray(bundle["energies"], dtype=np.float64)
 
     def _saved(kind: str, filename: str) -> Optional[dict]:
-        path = cfg.OUTPUT_ANALYSIS / kind / f"n{generation:02d}" / filename
+        path = cfg.OUTPUT_ANALYSIS / raw_root.name/kind / f"n{generation:02d}" / filename
         return path
 
     parity = resonance = interaction = nulls = scaling = None
-    parity_path = cfg.OUTPUT_ANALYSIS / "parity" / f"n{generation:02d}" / "parity.npz"
+    parity_path = cfg.OUTPUT_ANALYSIS / raw_root.name / "parity" / f"n{generation:02d}" / "parity.npz"
     if parity_path.exists():
         parity = load_parity_analysis(parity_path)
         _require_same_raw(parity["metadata"], raw_root)
-    resonance_path = cfg.OUTPUT_ANALYSIS / "resonance" / f"n{generation:02d}" / "resonance.npz"
+    resonance_path = cfg.OUTPUT_ANALYSIS / raw_root.name / "resonance" / f"n{generation:02d}" / "resonance.npz"
     if resonance_path.exists():
         resonance = load_resonance_analysis(resonance_path)
         _require_same_raw(resonance["metadata"], raw_root)
-    interaction_path = cfg.OUTPUT_ANALYSIS / "resonance" / f"n{generation:02d}" / "interaction.npz"
+    interaction_path = cfg.OUTPUT_ANALYSIS / raw_root.name / "resonance" / f"n{generation:02d}" / "interaction.npz"
     if interaction_path.exists():
         interaction = load_interaction_remainder(interaction_path)
         _require_same_raw(interaction["metadata"], raw_root)
-    null_path = cfg.OUTPUT_ANALYSIS / "nulls" / f"n{generation:02d}" / "nulls.npz"
+    null_path = cfg.OUTPUT_ANALYSIS/ raw_root.name / "nulls" / f"n{generation:02d}" / "nulls.npz"
     if null_path.exists():
         loaded_nulls = load_nulls_analysis(null_path)
         _require_same_raw(loaded_nulls["metadata"], raw_root)
         nulls = _nulls_for_plots(loaded_nulls, mode if mode in bundle["modes"] else next(iter(bundle["modes"])), n_replicates)
-    scaling_path = cfg.OUTPUT_ANALYSIS / "scaling" / "scaling.npz"
+    scaling_path = cfg.OUTPUT_ANALYSIS / raw_root.name / "scaling" / "scaling.npz"
     if scaling_path.exists():
         loaded_scaling = load_scaling_analysis(scaling_path)
         _require_same_raw(loaded_scaling["metadata"], raw_root)

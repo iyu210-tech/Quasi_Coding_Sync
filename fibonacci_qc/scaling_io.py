@@ -65,6 +65,7 @@ def save_scaling_analysis(
             np_payload[prefix + "generations"] = np.asarray(fit.generations, dtype=np.int64)
             if hasattr(fit, "generation_usable"):
                 np_payload[prefix + "generation_usable"] = fit.generation_usable
+            np_payload[prefix + "indeterminate"] = fit.indeterminate
             mode_meta[mode] = _mode_fit_to_meta(fit)
         paired_meta: Dict[str, object] = {}
         paired: Dict[str, object] = payload["paired"]
@@ -80,7 +81,10 @@ def save_scaling_analysis(
                 np_payload[prefix + "support_global"] = pair["support_global"]
             if "delta_alpha_global" in pair:
                 np_payload[prefix + "delta_alpha_global"] = pair["delta_alpha_global"]
+            for extra in ("delta_alpha_shared_gens", "support_shared_gens", "shared_n_usable", "support_stable_shared_gens", "delta_alpha_stable_shared_gens"):
+                if extra in pair: np_payload[prefix + extra] = pair[extra]
             paired_meta[name] = {
+                "pairing": pair.get("pairing", "paired energies"),
                 "mode_a": pair["mode_a"],
                 "mode_b": pair["mode_b"],
             }
