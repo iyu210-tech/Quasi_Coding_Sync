@@ -265,6 +265,9 @@ def produce_resonance_analysis(
             }
         )
 
+    from fibonacci_qc.cross_generation import write_clean_anchor_tracks
+    
+    manifest["cross_generation"] = write_clean_anchor_tracks(out_root, generations, list(modes or cfg.DEFECT_MODES))
     manifest_path = out_root / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     manifest["manifest_path"] = str(manifest_path)

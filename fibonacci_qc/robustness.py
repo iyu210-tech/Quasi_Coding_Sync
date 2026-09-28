@@ -267,10 +267,22 @@ def analyze_generation_robustness(generation,*,geometry=None,modes=None,energies
             interaction_gate=comparison["gate"]
             interaction=dict(baseline=summaries[0],fine=summaries[1],**comparison)
         primary=worst_gate([v["primary_gate"] for v in results.values()]+[interaction_gate])
-    return dict(generation=geom.generation,
-                modes=results,
-                geometry_metadata=geom.to_metadata(),
-                interaction=interaction,
-                interaction_gate=interaction_gate,
-                primary_gate=primary,
-                gate_tolerances=dict(cfg.GATE_TOLERANCES))
+    first_mode = wanted[0]
+    bb, ff = base[first_mode], fine[first_mode]
+    cb = trusted_transmission_mask(bb["clean_status"], bb["T_clean"], bb["log_T_clean"])
+    cf = trusted_transmission_mask(ff["clean_status"], ff["T_clean"], ff["log_T_clean"])
+    clean_complete = bool(np.all(cb) and np.all(cf))
+    clean_base = [asdict(p) for p in detect_peaks(bb["T_clean"], eb)] if np.all(cb) else []
+    clean_fine = [asdict(p) for p in detect_peaks(ff["T_clean"], ef)] if np.all(cf) else []
+    return dict(
+        clean_peaks_baseline=clean_base,
+        clean_peaks_fine=clean_fine,
+        clean_peaks_complete=clean_complete,
+        generation=geom.generation,
+        modes=results,
+        geometry_metadata=geom.to_metadata(),
+        interaction=interaction,
+        interaction_gate=interaction_gate,
+        primary_gate=primary,
+        gate_tolerances=dict(cfg.GATE_TOLERANCES)
+    )

@@ -53,7 +53,17 @@ def save_nulls_analysis(
             np_payload[prefix + "null_S_max"] = result.null_S_max
             np_payload[prefix + "null_S_int"] = result.null_S_int
             np_payload[prefix + "D_observed"] = result.D_observed
+            np_payload[prefix + "D_geometry_expected"] = result.D_geometry_expected
+            np_payload[prefix + "D_residual"] = result.D_residual
             json_modes[mode][family] = {
+                "statistic_revision": result.statistic_revision,
+                "statistic_curve": "D_observed - D_geometry_expected",
+                "inference_valid": result.inference_valid,
+                "inference_reason": result.inference_reason,
+                "raw_S_max": result.raw_observed.S_max,
+                "raw_S_int": result.raw_observed.S_int,
+                "residual_abs_S_max": result.residual_abs_S_max,
+                "residual_abs_S_int": result.residual_abs_S_int,
                 "S_max": result.observed.S_max,
                 "S_int": result.observed.S_int,
                 "centered_S_max": result.centered_S_max,
@@ -136,6 +146,9 @@ def save_robustness_analysis(
         "modes": json_modes,
         "run_metadata": metadata or {},
         "primary_gate": analysis["primary_gate"],
+        "clean_peaks_baseline": analysis["clean_peaks_baseline"],
+        "clean_peaks_fine": analysis["clean_peaks_fine"],
+        "clean_peaks_complete": analysis["clean_peaks_complete"],
         "interaction": analysis["interaction"],
         "interaction_gate": analysis["interaction_gate"],
         "gate_tolerances": analysis["gate_tolerances"],
@@ -228,6 +241,9 @@ def produce_robustness_analysis(
     from fibonacci_qc.robustness import worst_gate
     cfg.ensure_output_dirs()
     gens=list(cfg.GENERATIONS if generations is None else generations)
+    if len(gens) != len(set(gens)) or not gens:
+        raise ValueError("nonempty unique generations required")
+    clean_base, clean_fine, clean_complete = {}, {}, True
     wanted=list(cfg.DEFECT_MODES if modes is None else modes)
     root=Path(output_dir)
     if not root.is_absolute():root=cfg.OUTPUT_ANALYSIS/root
@@ -247,6 +263,13 @@ def produce_robustness_analysis(
         path=save_robustness_analysis(analysis,root/f"n{gen:02d}"/"robustness.npz", metadata={"source_raw_dir":str(rawroot) if rawroot is not None else None})
         manifest["files"].append(str(path.relative_to(root)))
         manifest["generation_gates"][str(gen)]=analysis["primary_gate"]
+        clean_base[gen] = analysis["clean_peaks_baseline"]
+        clean_fine[gen] = analysis["clean_peaks_fine"]
+        clean_complete &= analysis["clean_peaks_complete"]
+
+    from fibonacci_qc.cross_generation import compare_clean_anchor_grid
+
+    cross = compare_clean
     manifest["primary_gate"]=worst_gate(manifest["generation_gates"].values())
     path=root/"manifest.json";path.write_text(json.dumps(manifest,indent=2),encoding="utf-8")
     manifest["manifest_path"]=str(path)

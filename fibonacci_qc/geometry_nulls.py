@@ -43,6 +43,12 @@ class PermutationNullResult:
     effective_permutation_freedom: int
     residual_abs_S_max: float
     residual_abs_S_int: float
+    raw_observed: GlobalParityStats
+    D_geometry_expected: np.ndarray
+    D_residual: np.ndarray
+    inference_valid: bool
+    inference_reason: str
+    statistic_revision: str
 
 def applicable_strata(mode: str) -> Tuple[str, ...]:
     "Return geometry null strata applicable to a mode"
@@ -159,6 +165,40 @@ def _upper_tail_pvalue(observed: float, null_samples: np.ndarray) -> float:
         return float("nan")
     return float((1+np.count_nonzero(samples >= observed-1e-15))/(samples.size+1))
 
+NULL_STATISTIC_REVISION = "geomeetry-centered-curve-v2"
+
+def geometry_expected_contrast(transmission, parity, labels, valid, *, cell_valid=None):
+    "Within stratum permuation expectation of global D(E). mu(E)=sum_s[n_even,s/N_even-n_odd,s/N_odd]*mean_s T(E)"
+    t = np.asarray(transmission, dtype=float)
+    parity = np.asarray(parity, dtype=np.int8)
+    labels = np.asarray(labels)
+    valid = np.asarray(valid, dtype=bool)
+    if t.ndim != 2 or parity.shape != (t.shape[0],):
+        raise ValueError("transmission/parity axes disagree")
+    if labels.shape != parity.shape or valid.shape != parity.shape:
+        raise ValueError("labels and validity must match position axis")
+    if np.any(~np.isin(parity[valid], [0, 1])):
+        raise ValueError("eligible parity labels must be 0 or 1")
+    cell = np.isfinite(t)
+    if cell_valid is not None:
+        supplied = np.asarray(cell_valid, dtype=bool)
+        if supplied.shape != t.shape:
+            raise ValueError("cell_valid must match transmission")
+        cell &= supplied
+    ne = int(np.count_nonzero(valid & (parity==0)))
+    no = int(np.count_nonzero(valid & (parity == 1)))
+    mu = np.full(t.shape[1], np.nan)
+    if not ne or not no:
+        return mu
+    complete = np.all(cell[valid], axis = 0)
+    cols = np.flatnonzero(complete)
+    mu[cols] = 0.0
+    for label in np.unique(labels[valid]):
+        idx = np.flatnonzero(valid & (labels == label))
+        weight = np.count_nonzero(parity[idx] == 0)/ne - np.count_nonzero(parity[idx] == 1) / no
+        mu[cols] += weight * np.mean(t[np.ix_(idx, cols)], axis=0)
+    return mu
+
 def stratified_permutation_null(
     transmission: np.ndarray,
     geometry: FibonacciGeometry,
@@ -200,6 +240,15 @@ def stratified_permutation_null(
         null_s_max[b] = stats_b.S_max
         null_s_int[b] = stats_b.S_int
     diag = stratum_permutation_diagnostics(parity, labels, valid)
+    mu = geometry_expected_contrast(t, parity, labels, valid, cell_valid=cell_valid)
+    residual = observed_contrast.D - mu
+    raw_observed = global_parity_stats(observed_contrast.D, e_out)
+    complete = bool(np.all(np.isfinite(residual)))
+    has_freedom = bool(diag["n_free_strata"] > 0)
+    inference_valid = complete and has_freedom
+    reason = ("complete data within stratum parity overlap" if inference_valid else "incomplete numerical data or no overall overlap" if not complete else "no within stratum permutation freedom")
+    undefined = GlobalParityStats(float("nan"), float("nan"))
+    observed = global_parity_stats(residual, e_out) if complete else undefined
     centered_max = float(observed.S_max - np.nanmean(null_s_max))
     centered_int = float(observed.S_int - np.nanmean(null_s_int))
     return PermutationNullResult(
@@ -225,8 +274,14 @@ def stratified_permutation_null(
         n_blocked_strata=int(diag["n_blocked_strata"]),
         n_free_strata=int(diag["n_free_strata"]),
         effective_permutation_freedom=int(diag["effective_permutation_freedom"]),
-        residual_abs_S_max=float(abs(centered_max)),
-        residual_abs_S_int=float(abs(centered_int)),
+        residual_abs_S_max=observed.S_max, 
+        residual_abs_S_int=observed.S_int,
+        raw_observed=raw_observed,
+        D_geometry_expected=mu,
+        D_residual=residual,
+        inference_valid=inference_valid,
+        inference_reason=reason,
+        statistic_revision=NULL_STATISTIC_REVISION,
     )
 
 def run_geometry_nulls(
@@ -304,6 +359,12 @@ def null_summary_table(
                 {
                     "mode": mode,
                     "stratum_family": family,
+                    "statistic_revision": result.statistic_revision,
+                    "statistic_curve": "D_observed - D_geometry_expected",
+                    "inference_valid": result.inference_valid,
+                    "inference_reason": result.inference_reason,
+                    "raw_S_max": result.raw_observed.S_max,
+                    "raw_S_int": result.raw_observed.S_int,
                     "S_max": result.observed.S_max,
                     "S_int": result.observed.S_int,
                     "centered_S_max": result.centered_S_max,

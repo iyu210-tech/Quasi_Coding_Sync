@@ -97,6 +97,10 @@ def run_analyze_driver(
     files=sorted(raw_root.glob("n*/*.npz"))
     identity=hashlib.sha256("".join(str(p.relative_to(raw_root))+_file_hash(p) for p in files).encode()).hexdigest()
     source={"source_raw_dir":str(raw_root),"source_data_sha256":identity, "source_run_id":first["run_metadata"].get("run_id"),"config_sha256":config_sha256(), "analysis_config":cfg.CONFIG.as_dict(),"generations":gens,"modes":wanted, "n_replicates":int(n_replicates)}
+    source["analysis_revisions"] = {
+        "geometry_null": "geometry-centered-curve-v2",
+        "cross_generation_resonance": "clean-anchor-continuation-v1",
+    }
     guard=root/"source.json"
     if guard.exists() and json.loads(guard.read_text())!=source:
         raise ValueError(f"analysis destination belongs to different data/settings: {root}; use a new run name")

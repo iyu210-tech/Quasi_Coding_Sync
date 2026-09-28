@@ -377,7 +377,7 @@ def safe_log_t(
     "Return log(T)"
     if not np.isfinite(t) or t <= 0:
         return float("nan"), "invalid"
-    return math.log_t, "ok"
+    return math.log(t), "ok"
 
 def exterior_unitarity_residuals(s_matrix: SMatrix, q_lead: complex) -> dict[str, float]:
     "For propagating exterior leads (Im q roughly 0)"
@@ -454,7 +454,7 @@ def clean_transmission(
     v_lead_ev: float = cfg.V_LEAD_EV,
 ) -> TransmissionResult:
     "T_clean(n, E) for Fib generation n"
-    geom = build_geometry(generation) if geometry is not None else geometry
+    geom = build_geometry(generation) if geometry is None else geometry
     if geom.generation != generation:
         raise ValueError(f"geometry generation {geom.generation} doesn't match generation {generation}")
     return stack_transmission(geom.widths_nm, geom.potentials_ev, energy_ev, v_lead_ev)

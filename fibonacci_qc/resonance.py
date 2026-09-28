@@ -206,61 +206,63 @@ def chain_peaks_across_generations(
     max_delta_e: float = DEFAULT_MAX_MATCH_DELTA_E_EV,
 ) -> List[Dict[str, object]]:
     "Order preserving matches chaining peak lists over generations, return one record"
+    gens = [int(g) for g in generations]
     if len(peaks_by_generation) != len(generations):
         raise ValueError("peaks_by_generation and generations length are mismatched")
-    if not peaks_by_generation:
-        return []
-    #identites are each peak in first generation
-    identities: List[Dict[str, object]] = [
-        {
-            "path": [
-                {
-                    "generation": int(generations[0]),
-                    "peak_index": p.index,
-                    "energy": p.energy,
-                }
-            ]
-        }
-        for p in peaks_by_generation[0]
-    ]
-    current = list(peaks_by_generation[0])
-    for g_idx in range(1, len(peaks_by_generation)):
-        nxt = list(peaks_by_generation[g_idx])
-        match = match_peaks_order_preserving(current, nxt, max_delta_e=max_delta_e)
-        forward: Dict[int, Peak] = {}
-        # rebuild w/ energies
-        used_prev = set()
-        new_current: List[Peak] = []
-        new_identities: List[Dict[str, object]] = []
-        # Rematch
-        prev_by_index = {p.index: i for i, p in enumerate(current)}
-        next_by_index = {p.index: j for j, p in enumerate(nxt)}
-        for m in match.matched:
-            if m.clean_index not in prev_by_index or m.defect_index not in next_by_index:
+    if any(b <= a for a, b in zip(gens, gens[1:])):
+        raise ValueError("generations must be unique and strictly increasing")
+    if not np.isfinite(max_delta_e) or max_delta_e < 0:
+        raise ValueError("max_delta_e must be finite and nonnegative")
+    tracks = []
+    active = {}
+    previous = []
+    previous_generation = None
+    for gen, supplied in zip(gens, peaks_by_generation):
+        current = sorted(supplied, key=lambda p: p.energy)
+        if len({p.index for p in current}) != len(current):
+            raise ValueError("duplicate peak indices in a generation")
+        if not all(np.isfinite(p.energy) for p in current):
+            raise ValueError("peak energies must befinite")
+        next_active = {}
+        matched_current = set()
+        adjacent = previous_generation is not None and gen == previous_generation + 1
+        if adjacent:
+            match = match_peaks_order_preserving(previous, current, max_delta_e=max_delta_e)
+            current_by_index = {p.index: p for p in current}
+            for m in match.matched:
+                i = active[m.clean_index]
+                j = current_by_index[m.defect_index]
+                tracks[i]["path"].append({
+                    "generation": gen,
+                    "peak_index": j.index,
+                    "energy": j.energy,
+                    "height": j.height,
+                })
+                next_active[j.index] = i
+                matched_current.add(j.index)
+        continuing = set(next_active.values())
+        for track_id in active.values():
+            if track_id not in continuing:
+                tracks[track_id]["end_reason"] = "unmatched" if adjacent else "generation_gap"
+                tracks[track_id]["ended_before_generation"] = gen
+        for peak in current:
+            if peak.index in matched_current:
                 continue
-            i = prev_by_index[m.clean_index]
-            j = next_by_index[m.defect_index]
-            if i in used_prev:
-                continue
-            used_prev.add(i)
-            ident = identities[i]
-            ident = {
-                "path": list(ident["path"])
-                + [
-                    {
-                        "generation": int(generations[g_idx]),
-                        "peak_index": nxt[j].index,
-                        "energy": nxt[j].energy,
-                    }
-                ]
-            }
-            new_identities.append(ident)
-            new_current.append(nxt[j])
-        identities = new_identities
-        current = new_current
-        if not current:
-            break
-    return identities
+            track_id = len(tracks)
+            tracks.append({
+                "track_id": track_id,
+                "birth_generation": gen,
+                "end_reason": "right_censored",
+                "path": [{
+                    "generation": gen,
+                    "peak_index": peak.index,
+                    "energy": peak.energy,
+                    "height": peak.height,
+                }],
+            })
+            next_active[peak.index] = track_id
+        active, previous, previous_generation = next_active, current, gen
+    return tracks
 
 def _shift_stats(matches: Sequence[PeakMatch]) -> Tuple[float, float, float]:
     if not matches:

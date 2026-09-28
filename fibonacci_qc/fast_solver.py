@@ -344,8 +344,8 @@ def validate_against_reference(
 
 def _resolve_geometry(geometry:Optional[FibonacciGeometry], generation: Optional[int]) -> FibonacciGeometry:
     if geometry is not None:
-        if generation is None: raise ValueError("either geometry or generation required")
-        return build_geometry(generation)
-    if generation is not None and generation != geometry.generation:
-        raise ValueError("geometry and generation don't match")
-    return geometry
+        if generation is not None and geometry.generation != generation: raise ValueError("geometry and generation don't match")
+        return geometry
+    if generation is None:
+        raise ValueError("either geometry or generation required")
+    return build_geometry(generation)

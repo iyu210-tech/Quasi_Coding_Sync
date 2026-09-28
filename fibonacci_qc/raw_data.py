@@ -13,6 +13,7 @@ import hashlib
 import resource
 import shutil
 import sys
+import uuid
 
 from fibonacci_qc import config as cfg
 from fibonacci_qc.fast_solver import StackCache, fast_sweep, validate_against_reference
