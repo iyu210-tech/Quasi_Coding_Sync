@@ -212,7 +212,21 @@ def robustness_check_mode(geometry,mode,*,energies_baseline=None,energies_fine=N
     numerical="pass" if complete else "unresolved"
     gate=classify_robustness(contrast,rows,response_gate=rc["gate"],numerical_gate=numerical)
     if not full_positions:gate=worst_gate([gate,"unresolved"])
+
+    from fibonacci_qc.geometry_nulls import applicable_strata, geometry_expected_contrast
+
+    residual_checks = {}
+    for family in applicable_strata(mode):
+        labels = geometry.stratum_labels(family)
+        mu_b = geometry_expected_contrast(b["T"], parity, labels, valid, cell_valid=bc)
+        mu_f = geometry_expected_contrast(f["T"], parity, labels, valid, cell_valid=fc)
+        comparison = compare_parity_contrast(db-mu_b, eb, df-mu_f, ef)
+        residual_checks[family] = {"gate": classify_contrast_robustness(comparison), "comparison": asdict(comparison)}
+    residual_gate = worst_gate([v["gate"] for v in residual_checks.values()])
+    gate = worst_gate([gate, residual_gate])
     return dict(
+        residual_parity_gate=residual_gate,
+        residual_parity_checks=residual_checks,
         mode=mode,
         generation=geometry.generation,
         n_energy_baseline=len(eb),

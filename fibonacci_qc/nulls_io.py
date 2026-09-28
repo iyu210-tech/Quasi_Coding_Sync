@@ -136,6 +136,8 @@ def save_robustness_analysis(
             "response_baseline": payload["response_baseline"],
             "response_fine": payload["response_fine"],
             "response_comparison": payload["response_comparison"],
+            "residual_parity_gate": payload["residual_parity_gate"],
+            "residual_parity_checks": payload["residual_parity_checks"],
             "all_valid_resonance_positions": payload["all_valid_resonance_positions"],
         }
     np.savez_compressed(out, **np_payload)
@@ -267,9 +269,10 @@ def produce_robustness_analysis(
         clean_fine[gen] = analysis["clean_peaks_fine"]
         clean_complete &= analysis["clean_peaks_complete"]
 
-    from fibonacci_qc.cross_generation import compare_clean_anchor_grid
+    from fibonacci_qc.cross_generation import compare_clean_anchor_grids
 
-    cross = compare_clean
+    cross = compare_clean_anchor_grids(gens, clean_base, clean_fine, complete=clean_complete)
+    manifest["cross_generation_gate"] = cross
     manifest["primary_gate"]=worst_gate(manifest["generation_gates"].values())
     path=root/"manifest.json";path.write_text(json.dumps(manifest,indent=2),encoding="utf-8")
     manifest["manifest_path"]=str(path)

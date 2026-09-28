@@ -114,6 +114,15 @@ def run_analyze_driver(
     results["scaling"]=produce_scaling_analysis(str(raw_root),generations=gens,modes=wanted,windows=windows,output_dir=root/"scaling")
     results["robustness"]=produce_robustness_analysis(generations=gens,modes=wanted,
         energies_baseline=energies,output_dir=root/"robustness",raw_dir=str(raw_root))
+    cross_path = root/"resonance"/"cross_generation.meta.json"
+    cross_meta = json.loads(cross_path.read_text())
+    cross_meta["numerical_gate"] = results["robustness"]["cross_generation_gate"]["gate"]
+    cross_meta["numerically_accepted"] = bool(
+        results["robustness"]["primary_gate"] == "pass"
+        and not results["parity"]["numerical_failure"]
+        and cross_meta["numerical_gate"] == "pass"
+    )
+    cross_path.write_text(json.dumps(cross_meta, indent=2), encoding="utf-8")
     for sidecar in root.glob("**/*.meta.json"):
         data=json.loads(sidecar.read_text())
         data.setdefault("run_metadata",{}).update(source)
