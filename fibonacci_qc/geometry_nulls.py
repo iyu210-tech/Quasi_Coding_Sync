@@ -165,37 +165,57 @@ def _upper_tail_pvalue(observed: float, null_samples: np.ndarray) -> float:
         return float("nan")
     return float((1+np.count_nonzero(samples >= observed-1e-15))/(samples.size+1))
 
-NULL_STATISTIC_REVISION = "geomeetry-centered-curve-v2"
+NULL_STATISTIC_REVISION = "geometry-centered-curve-v2"
 
-def geometry_expected_contrast(transmission, parity, labels, valid, *, cell_valid=None):
-    "Within stratum permuation expectation of global D(E). mu(E)=sum_s[n_even,s/N_even-n_odd,s/N_odd]*mean_s T(E)"
+def geometry_expected_contrast(
+    transmission,
+    parity,
+    labels,
+    valid,
+    *,
+    cell_valid=None,
+):
+    "Exact within stratum permutation expectation of the global D(E)."
     t = np.asarray(transmission, dtype=float)
     parity = np.asarray(parity, dtype=np.int8)
     labels = np.asarray(labels)
     valid = np.asarray(valid, dtype=bool)
+
     if t.ndim != 2 or parity.shape != (t.shape[0],):
         raise ValueError("transmission/parity axes disagree")
+
     if labels.shape != parity.shape or valid.shape != parity.shape:
-        raise ValueError("labels and validity must match position axis")
+        raise ValueError("labels and validity must match the position axis")
+
     if np.any(~np.isin(parity[valid], [0, 1])):
         raise ValueError("eligible parity labels must be 0 or 1")
+
     cell = np.isfinite(t)
+
     if cell_valid is not None:
         supplied = np.asarray(cell_valid, dtype=bool)
         if supplied.shape != t.shape:
             raise ValueError("cell_valid must match transmission")
         cell &= supplied
-    ne = int(np.count_nonzero(valid & (parity==0)))
+
+    ne = int(np.count_nonzero(valid & (parity == 0)))
     no = int(np.count_nonzero(valid & (parity == 1)))
+
     mu = np.full(t.shape[1], np.nan)
+
     if not ne or not no:
         return mu
-    complete = np.all(cell[valid], axis = 0)
+
+    complete = np.all(cell[valid], axis=0)
     cols = np.flatnonzero(complete)
+
     mu[cols] = 0.0
+
     for label in np.unique(labels[valid]):
         idx = np.flatnonzero(valid & (labels == label))
-        weight = np.count_nonzero(parity[idx] == 0)/ne - np.count_nonzero(parity[idx] == 1) / no
+
+        weight = (np.count_nonzero(parity[idx] == 0) / ne - np.count_nonzero(parity[idx] == 1) / no)
+
         mu[cols] += weight * np.mean(t[np.ix_(idx, cols)], axis=0)
     return mu
 
@@ -211,46 +231,56 @@ def stratified_permutation_null(
     n_replicates: int = cfg.PERMUTATION_REPLICATES,
     seed: int = 0,
 ) -> PermutationNullResult:
-    "Run stratified parity permutation null for a stratum family."
+    "Two-sided magnitude diagnostic for the geometry-centered D(E) curve."
+
     if stratum_family not in applicable_strata(mode):
-        raise ValueError(f"stratum family {stratum_family!r} is not applicable to mode {mode!r}; use one of {applicable_strata(mode)}")
+        raise ValueError(
+            f"stratum family {stratum_family!r} is not applicable to {mode!r}"
+        )
     if n_replicates < 1:
         raise ValueError("n_replicates must be >= 1")
     t = np.asarray(transmission, dtype=np.float64)
     parity = position_parity(geometry, mode)
     valid = position_valid_mask(geometry, mode, sweep_valid=sweep_valid)
     labels = geometry.stratum_labels(stratum_family)
-    if labels.shape[0] != parity.shape[0]:
-        raise ValueError(f"stratum {stratum_family!r} length {labels.shape[0]} does not match parity axis {parity.shape[0]}")
     e_out = (
         np.asarray(energies, dtype=np.float64)
         if energies is not None
         else np.arange(t.shape[1], dtype=np.float64)
     )
     observed_contrast = parity_contrast(t, parity, valid, energies=e_out, cell_valid=cell_valid)
-    observed = global_parity_stats(observed_contrast.D, e_out)
-    rng = np.random.default_rng(seed)
-    null_s_max = np.empty(n_replicates, dtype=np.float64)
-    null_s_int = np.empty(n_replicates, dtype=np.float64)
-    for b in range(n_replicates):
-        # One fixed labeling for energy axis
-        perm_parity = permute_parity_within_strata(parity, labels, valid, rng)
-        d_b = parity_contrast(t, perm_parity, valid, energies=e_out, cell_valid=cell_valid).D
-        stats_b = global_parity_stats(d_b, e_out)
-        null_s_max[b] = stats_b.S_max
-        null_s_int[b] = stats_b.S_int
     diag = stratum_permutation_diagnostics(parity, labels, valid)
     mu = geometry_expected_contrast(t, parity, labels, valid, cell_valid=cell_valid)
+
     residual = observed_contrast.D - mu
     raw_observed = global_parity_stats(observed_contrast.D, e_out)
     complete = bool(np.all(np.isfinite(residual)))
     has_freedom = bool(diag["n_free_strata"] > 0)
     inference_valid = complete and has_freedom
-    reason = ("complete data within stratum parity overlap" if inference_valid else "incomplete numerical data or no overall overlap" if not complete else "no within stratum permutation freedom")
+    reason = (
+        "complete data with within-stratum parity overlap"
+        if inference_valid
+        else (
+            "incomplete numerical data or no overall parity overlap"
+            if not complete
+            else "no within-stratum permutation freedom"
+        )
+    )
     undefined = GlobalParityStats(float("nan"), float("nan"))
     observed = global_parity_stats(residual, e_out) if complete else undefined
-    centered_max = float(observed.S_max - np.nanmean(null_s_max))
-    centered_int = float(observed.S_int - np.nanmean(null_s_int))
+    rng = np.random.default_rng(seed)
+    null_s_max = np.full(n_replicates, np.nan)
+    null_s_int = np.full(n_replicates, np.nan)
+    if inference_valid:
+        for b in range(n_replicates):
+            perm_parity = permute_parity_within_strata(parity, labels, valid, rng)
+            d_b = parity_contrast(t, perm_parity, valid, energies=e_out, cell_valid=cell_valid).D
+            stats_b = global_parity_stats(d_b - mu, e_out)
+            null_s_max[b] = stats_b.S_max
+            null_s_int[b] = stats_b.S_int
+    centered_max = (observed.S_max - float(np.mean(null_s_max)) if inference_valid else np.nan)
+    centered_int = (observed.S_int - float(np.mean(null_s_int)) if inference_valid else np.nan)
+
     return PermutationNullResult(
         stratum_family=stratum_family,
         mode=mode,
@@ -259,22 +289,22 @@ def stratified_permutation_null(
         observed=observed,
         null_S_max=null_s_max,
         null_S_int=null_s_int,
-        centered_S_max=centered_max,
-        centered_S_int=centered_int,
-        p_S_max=_upper_tail_pvalue(observed.S_max, null_s_max),
-        p_S_int=_upper_tail_pvalue(observed.S_int, null_s_int),
+        centered_S_max=float(centered_max),
+        centered_S_int=float(centered_int),
+        p_S_max=_upper_tail_pvalue(observed.S_max, null_s_max) if inference_valid else np.nan,
+        p_S_int=_upper_tail_pvalue(observed.S_int, null_s_int) if inference_valid else np.nan,
         D_observed=observed_contrast.D,
         energies=e_out,
         seed=seed,
-        n_valid = int(diag["n_valid"]),
+        n_valid=int(diag["n_valid"]),
         n_even=int(diag["n_even"]),
-        n_odd = int(diag["n_odd"]),
+        n_odd=int(diag["n_odd"]),
         parity_overlap=int(diag["parity_overlap"]),
         n_strata=int(diag["n_strata"]),
         n_blocked_strata=int(diag["n_blocked_strata"]),
         n_free_strata=int(diag["n_free_strata"]),
         effective_permutation_freedom=int(diag["effective_permutation_freedom"]),
-        residual_abs_S_max=observed.S_max, 
+        residual_abs_S_max=observed.S_max,
         residual_abs_S_int=observed.S_int,
         raw_observed=raw_observed,
         D_geometry_expected=mu,
