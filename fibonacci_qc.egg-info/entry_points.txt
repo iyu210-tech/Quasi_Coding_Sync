@@ -1,0 +1,4 @@
+[console_scripts]
+fibonacci-qc-analyze = fibonacci_qc.drivers:main_analyze
+fibonacci-qc-figures = fibonacci_qc.drivers:main_figures
+fibonacci-qc-raw = fibonacci_qc.drivers:main_raw

@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: fibonacci-qc
+Version: 0.1.0
+Summary: Finite-size quantum transport under local defects in a 1D Fibonacci quasicrystal.
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: matplotlib>=3.7
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: mpmath>=1.3; extra == "dev"
